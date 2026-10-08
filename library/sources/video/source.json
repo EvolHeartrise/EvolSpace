@@ -1,0 +1,8 @@
+{
+  "description": "Video fetcher for the video widget: downloads YouTube (and any yt-dlp-supported / direct video) URLs requested on video.request into data/media (≤1080p H.264/AAC MP4, cached by URL) and publishes their status on video.media; the server serves them at /media/<file>.",
+  "command": "node",
+  "args": ["video.mjs", "--prefix", "video", "--max-height", "1080"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}
