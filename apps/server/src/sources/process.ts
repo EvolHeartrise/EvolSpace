@@ -2,6 +2,7 @@
 // resolution and killing whole process trees (Windows needs taskkill /T).
 import path from 'node:path';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { isInside } from '../util/fs.ts';
 
@@ -15,7 +16,7 @@ export function venvPython(dir: string): string | null {
 /**
  * Resolve "{python}": the nearest .venv walking up from the source's cwd (e.g.
  * cwd "../../../python/stt" → python/stt/.venv), stopping at the repo root, then
- * the source folder's own .venv, else plain "python" from PATH.
+ * the source folder's own .venv, else "python" ("python3" off Windows) from PATH.
  * "{python:python/stt}" names a project folder (relative to the repo root) explicitly.
  */
 export function resolvePython(spec: string, ctx: { cwd: string; sourceDir: string; repoRoot: string }): string {
@@ -34,7 +35,7 @@ export function resolvePython(spec: string, ctx: { cwd: string; sourceDir: strin
     if (parent === dir || !isInside(ctx.repoRoot, parent)) break;
     dir = parent;
   }
-  return venvPython(ctx.sourceDir) ?? 'python';
+  return venvPython(ctx.sourceDir) ?? (isWin ? 'python' : 'python3'); // Debian/Ubuntu ship no bare `python`
 }
 
 export interface ResolvedCommand {
@@ -139,6 +140,15 @@ export function processImage(pid: number): Promise<string | null> {
         const m = !err && /^"([^"]+)","(\d+)"/m.exec(stdout);
         resolve(m && Number(m[2]) === pid ? m[1].toLowerCase() : null);
       });
+      return;
+    }
+    if (process.platform === 'linux') {
+      // argv[0] as we spawned it. `ps -o comm=` is the thread name instead: Node renames
+      // its main thread "MainThread", and a venv's python symlink shows as "python3.12".
+      readFile(`/proc/${pid}/cmdline`, 'utf8').then(
+        (cmdline) => { const argv0 = cmdline.split('\0')[0]; resolve(argv0 ? path.basename(argv0).toLowerCase() : null); },
+        () => resolve(null),
+      );
       return;
     }
     execFile('ps', ['-p', String(pid), '-o', 'comm='], { timeout: 10_000 }, (err, stdout) => {

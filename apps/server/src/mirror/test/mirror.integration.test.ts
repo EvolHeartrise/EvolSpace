@@ -227,7 +227,9 @@ describe('mirror (headless Chromium, end to end)', () => {
     expectRich(await mirror.screenshot({ view: { kind: 'widget', widget: 'chatty' }, width: 200, height: 200 }), 'chatty');
     expectRich(await mirror.screenshot({ view: { kind: 'entity', entity: 'c1' }, width: 200, height: 200 }), 'chatty entity');
     await new Promise((r) => setTimeout(r, 800));
-    const sideEffects = server.received.filter((m) => ['scene.ops', 'channel.publish', 'widget.event', 'agent.ask', 'command', 'scene.undo', 'scene.redo'].includes(m.type));
+    // The NetClient liveness ping is not a widget side effect (it fires when the socket is quiet, e.g. under load).
+    const isPing = (m: { type: string; name?: unknown }) => m.type === 'command' && m.name === 'ping';
+    const sideEffects = server.received.filter((m) => ['scene.ops', 'channel.publish', 'widget.event', 'agent.ask', 'command', 'scene.undo', 'scene.redo'].includes(m.type) && !isPing(m));
     expect(sideEffects.map((m) => m.type)).toEqual([]);
     // Observability still flows: the mirror did say hello and subscribe-style traffic is allowed.
     expect(server.received.some((m) => m.type === 'hello')).toBe(true);

@@ -46,7 +46,8 @@ describe('origin policy', () => {
   const policy = createOriginPolicy({ extraOrigins: ['https://allowed.example'] });
   it('allows non-browser clients, same origin, loopback and configured origins', () => {
     expect(policy.allowed(fakeReq({ host: '127.0.0.1:8787' }))).toBe(true);
-    expect(policy.allowed(fakeReq({ host: '192.168.1.69:8443', origin: 'https://192.168.1.69:8443' }))).toBe(true);
+    const lan = lanInterfaces()[0]?.address ?? '127.0.0.1'; // headset → this machine's LAN address
+    expect(policy.allowed(fakeReq({ host: `${lan}:8443`, origin: `https://${lan}:8443` }))).toBe(true);
     expect(policy.allowed(fakeReq({ host: '127.0.0.1:8787', origin: 'http://localhost:5173' }))).toBe(true);
     expect(policy.allowed(fakeReq({ host: '127.0.0.1:8787', origin: 'http://127.0.0.1:8787' }))).toBe(true);
     expect(policy.allowed(fakeReq({ host: '127.0.0.1:8787', origin: 'https://allowed.example' }))).toBe(true);
