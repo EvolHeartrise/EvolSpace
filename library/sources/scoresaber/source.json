@@ -1,0 +1,8 @@
+{
+  "description": "ScoreSaber global top players (public API, no key), refreshed every 5 min: panel markup on scoresaber.body, rows {rank,name,country,pp,acc} on scoresaber.top.",
+  "command": "node",
+  "args": ["scoresaber.mjs", "--top", "10", "--prefix", "scoresaber", "--every", "300"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}
