@@ -93,7 +93,8 @@ export const sourcesTool = defineTool({
       return list
         .map((s) => {
           const exit = s.lastExit ? ` last exit ${s.lastExit.code ?? 'signal'} ${ago(s.lastExit.at)}` : '';
-          return `${s.id}: ${s.running ? `running pid ${s.pid ?? '?'}` : 'stopped'} restarts=${s.restarts}${exit}`;
+          const missing = s.missingSecrets?.length ? ` — missing secret(s) ${s.missingSecrets.join(', ')} (ask the user to add them to the secrets file)` : '';
+          return `${s.id}: ${s.running ? `running pid ${s.pid ?? '?'}` : 'stopped'} restarts=${s.restarts}${exit}${missing}`;
         })
         .join('\n');
     }
@@ -106,7 +107,8 @@ export const sourcesTool = defineTool({
       return `${s.id} (${s.running ? 'running' : 'stopped'}) last ${tail.length} log lines:\n${tail.join('\n') || '(empty)'}`;
     }
     const r = await ctx.api.post<Partial<SourceStatus>>(`/api/sources/${encodeURIComponent(args.id)}/${action}`, undefined, { timeoutMs: 30_000 });
-    return `source ${args.id}: ${action} ok${r && typeof r.running === 'boolean' ? ` (${r.running ? 'running' : 'stopped'})` : ''}`;
+    const missing = r?.missingSecrets?.length ? ` — not started: missing secret(s) ${r.missingSecrets.join(', ')}; the user adds them to ~/.config/evolspace/secrets.env (never ask them to say or paste the value)` : '';
+    return `source ${args.id}: ${action} ok${r && typeof r.running === 'boolean' ? ` (${r.running ? 'running' : 'stopped'})` : ''}${missing}`;
   },
 });
 
