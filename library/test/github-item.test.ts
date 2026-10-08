@@ -26,29 +26,38 @@ it('converts GitHub markdown to panel markup', () => {
   expect(toMarkup(md)).toBe('# Context\nWe are adding **passive** docs here\n- item\n  - sub\nquote\n---\n```\nlet x = 1;\n```\nGenerated with Claude Code');
 });
 
-it('shows an item from the details channel, follows the item input, pages long text', async () => {
+it('shows an item from the details channel, follows the item input, scrolls long text', async () => {
   const h = await mount(githubItem, { number: 11, height: 0.4 });
   h.frame();
-  expect(h.hasText("Waiting for GitHub data (github source)…")).toBe(true);
-  const long = Array.from({ length: 40 }, (_, i) => `- point ${i}`).join('\n');
+  expect(h.hasText('Waiting for GitHub data (github source)…')).toBe(true);
+  const long = Array.from({ length: 60 }, (_, i) => `- point ${i}`).join('\n');
   h.publish('github.bsrl.details', { items: { 11: detail(11, 'issue', '# Idea\nShort.'), 62: detail(62, 'pr', long) } });
   h.frame();
   expect(h.hasText('Title 11')).toBe(true);
   expect(h.hasText('Issue #11')).toBe(true);
   expect(h.hasText('OPEN')).toBe(true);
   expect(h.hasText('you commented · Oct 3, 2026')).toBe(true);
-  expect(h.hasText('page 1 / 1')).toBe(true);
+  const thumb = () => h.root.getObjectByName('scrollbar')!;
+  expect(thumb()).toBeTruthy();
 
   h.input('item', { id: '#62', title: 'Title 62' }); // an item-list select
   h.frame();
   expect(h.rec.setProps.at(-1)).toEqual({ number: 62 });
   expect(h.hasText('Pull request #62')).toBe(true);
   expect(h.hasText('feat/x → main · +10 −2 in 3 files')).toBe(true);
-  expect(h.hasText('point 0')).toBe(true);
-  expect(h.hasText('point 39')).toBe(false); // on a later page
-  h.press('btn:next', 'drag');
+  expect(h.hasText(/^point 0$/)).toBe(true);
+  expect(h.hasText(/^point 59$/)).toBe(false); // below the viewport
+  expect(h.root.getObjectByName('btn:next')).toBeUndefined(); // no paging any more
+
+  h.drag('body', [0, 0.25, 0]); // pinch-drag the text up → later content
   h.frame();
-  expect(h.hasText('point 0')).toBe(false);
+  expect(h.hasText(/^point 0$/)).toBe(false);
+  expect(h.hasText(/^point 2\d$/)).toBe(true);
+
+  h.drag('scrollbar', [0, -1, 0], { from: [0.25, 0, 0] }); // thumb to the bottom
+  h.frame();
+  expect(h.hasText(/^point 59$/)).toBe(true);
+  expect(h.hasText('you commented · Oct 3, 2026')).toBe(true);
   expect(h.rec.errors).toEqual([]);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
