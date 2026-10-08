@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.pyc
+data/
+!data/.gitkeep
+certs/
+.env
+*.log
+.vite/
+test-results/
+playwright-report/
