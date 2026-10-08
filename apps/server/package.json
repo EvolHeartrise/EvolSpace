@@ -1,0 +1,21 @@
+{
+  "name": "@evolspace/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@evolspace/protocol": "*",
+    "chokidar": "^5.0.0",
+    "esbuild": "^0.28.2",
+    "playwright": "^1.64.0",
+    "selfsigned": "^5.5.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}
