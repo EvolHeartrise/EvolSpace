@@ -133,12 +133,29 @@ class SpaceRuntime {
   frameEntity(id: string): THREE.Box3 | null;   // world bounds of an entity subtree (mirror framing)
 }
 ```
+Additional runtime API: `applySnapshot(scene)`, `applyPatch(ops)` are public;
+constructor option `sceneFromNet?: boolean` (default true) — when false the
+runtime ignores scene messages from the net (still uses catalog, channels,
+gesture defs), so the mirror can render a local "studio" scene. Fonts are
+served by the client from `/fonts/` (apps/client/public/fonts; the runtime
+component downloads Inter + JetBrains Mono there — never load fonts from a CDN).
+Hand visuals: `createHandVisual(theme)` → object with `update(frame: HandFrame | undefined)`
+(capsules/spheres per joint; used for VR hands and mirror ghost hands).
+
 The runtime subscribes itself to NetClient messages (snapshot, patch, catalog,
 widget updates, channel values, gesture defs, agent status/messages) and
 loads widget bundles with dynamic `import(manifest.url)`. It also subscribes
 to channels needed by channel→port links and `ctx.channels.subscribe`.
 Built-in fallback: an entity whose widget is missing/broken renders as a
 wireframe box with an error label, and the error is reported via `client.error`.
+
+### Server ↔ mirror / voice
+`apps/server/src/mirror/types.ts` and `apps/server/src/voice/types.ts` define
+the interfaces (`startMirror(deps): Promise<Mirror>`, `createVoice(deps): VoiceService`).
+Stub `index.ts` files exist so the server boots; the mirror and voice components
+replace them. The server core wires them up (lazy-start the mirror on first
+screenshot; route voice.* messages and audio frames to the VoiceService).
+The STT service runs as a supervised source (`library/sources/stt/source.json`).
 
 ### Commands
 One registry name space. The client tries `runtime.runLocalCommand` first

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@evolspace/protocol": "*",
+    "@evolspace/input": "*",
     "chokidar": "^5.0.0",
     "esbuild": "^0.28.2",
     "playwright": "^1.64.0",
