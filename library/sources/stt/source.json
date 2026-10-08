@@ -1,0 +1,11 @@
+{
+  "description": "Speech-to-text for push-to-talk: faster-whisper HTTP service on 127.0.0.1:8790 (python/stt). Model/device via EVOL_STT_MODEL / EVOL_STT_DEVICE (default auto: small.en on CUDA int8, CPU fallback).",
+  "command": "{python:python/stt}",
+  "args": [
+    "-m",
+    "evol_stt"
+  ],
+  "cwd": "../../../python/stt",
+  "autostart": true,
+  "restart": true
+}

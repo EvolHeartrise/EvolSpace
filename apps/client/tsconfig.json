@@ -1,1 +1,5 @@
-{ "extends": "../../tsconfig.base.json", "include": ["src", "test", "*.ts"] }
+{
+  "extends": "../../tsconfig.base.json",
+  // runtime's ambient module declarations (troika) are needed when type-checking through its sources
+  "include": ["src", "test", "test-e2e", "*.ts", "../../packages/runtime/src/types/*.d.ts"]
+}

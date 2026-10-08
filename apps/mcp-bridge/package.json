@@ -10,5 +10,11 @@
     "@evolspace/protocol": "*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "^4.6.5"
+  },
+  "description": "EvolSpace MCP bridge: tools + claude/channel voice push for Claude Code (stdio).",
+  "scripts": {
+    "start": "node --import tsx src/main.ts",
+    "test": "vitest run --root ../.. apps/mcp-bridge",
+    "typecheck": "tsc -p tsconfig.json"
   }
 }

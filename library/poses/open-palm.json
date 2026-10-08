@@ -1,0 +1,16 @@
+{
+  "id": "open-palm",
+  "description": "Flat open hand, all fingers and thumb extended, any orientation.",
+  "hand": "either",
+  "conditions": [
+    { "feature": "curl.thumb", "max": 0.45 },
+    { "feature": "curl.index", "max": 0.3 },
+    { "feature": "curl.middle", "max": 0.3 },
+    { "feature": "curl.ring", "max": 0.3 },
+    { "feature": "curl.pinky", "max": 0.35 },
+    { "feature": "pinch.index", "min": 0.05 }
+  ],
+  "enterMs": 80,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}

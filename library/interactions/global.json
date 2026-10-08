@@ -1,0 +1,30 @@
+{
+  "description": "Global gestures that work anywhere: push-to-talk, ray selection, agent panel.",
+  "scope": "global",
+  "bindings": [
+    {
+      "id": "push-to-talk",
+      "description": "Hold a left-hand middle-finger pinch to talk to Claude; release to send.",
+      "pose": "pinch-middle",
+      "hand": "left",
+      "target": "none",
+      "action": { "type": "command", "command": "voice.ptt" }
+    },
+    {
+      "id": "select",
+      "description": "Right-hand middle-finger pinch selects the entity under the right hand's ray (pinching empty space clears the selection).",
+      "pose": "pinch-middle",
+      "hand": "right",
+      "target": "ray",
+      "action": { "type": "command", "command": "select" }
+    },
+    {
+      "id": "agent-panel",
+      "description": "Show the left palm, open and facing up, for a moment to toggle the agent panel.",
+      "pose": "palm-up-open",
+      "hand": "left",
+      "target": "none",
+      "action": { "type": "command", "command": "agent.panel.toggle" }
+    }
+  ]
+}

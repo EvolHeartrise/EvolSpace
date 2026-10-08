@@ -1,0 +1,142 @@
+[
+  {
+    "id": "cancel",
+    "description": "Discard the utterance (does nothing).",
+    "patterns": [
+      "cancel( that)?",
+      "never ?mind( that)?",
+      "forget (it|that|about it)",
+      "ignore (that|this|me)",
+      "scratch that",
+      "nothing"
+    ],
+    "command": "none"
+  },
+  {
+    "id": "undo",
+    "description": "Undo the last scene change.",
+    "patterns": [
+      "undo( (that|it|this|the last (change|thing|step|one)))?",
+      "undo undo",
+      "go back( one step)?",
+      "take (that|it) back"
+    ],
+    "command": "undo"
+  },
+  {
+    "id": "redo",
+    "description": "Redo the last undone change.",
+    "patterns": [
+      "re ?do( (that|it|this))?",
+      "redo redo"
+    ],
+    "command": "redo"
+  },
+  {
+    "id": "delete-target",
+    "description": "Delete the entity being pointed at (or the selection).",
+    "patterns": [
+      "(delete|remove|trash|get rid of) (this|that|it)( (one|thing|widget|object|panel|entity))?",
+      "(delete|remove) (the )?select(ed|ion)( (one|thing|widget|object|entity))?"
+    ],
+    "command": "delete",
+    "args": { "entity": "$target" }
+  },
+  {
+    "id": "duplicate-target",
+    "description": "Duplicate the entity being pointed at (or the selection).",
+    "patterns": [
+      "(duplicate|copy|clone) (this|that|it)( (one|thing|widget|object|panel|entity))?",
+      "(make|create) a copy( of (this|that|it))?",
+      "(duplicate|copy|clone) (the )?select(ed|ion)( (one|thing|widget|object|entity))?"
+    ],
+    "command": "duplicate",
+    "args": { "entity": "$target" }
+  },
+  {
+    "id": "select-target",
+    "description": "Select the entity being pointed at.",
+    "patterns": [
+      "select (this|that|it)( (one|thing|widget|object|panel|entity))?"
+    ],
+    "command": "broadcast",
+    "args": { "name": "select", "args": { "entity": "$target" } }
+  },
+  {
+    "id": "clear-selection",
+    "description": "Clear the selection.",
+    "patterns": [
+      "(clear|reset|drop)( the)? selection",
+      "(de ?select|un ?select)( (all|everything|this|that|it))?",
+      "select nothing"
+    ],
+    "command": "broadcast",
+    "args": { "name": "select", "args": { "entity": null } }
+  },
+  {
+    "id": "show-agent-panel",
+    "description": "Show the Claude/agent panel.",
+    "patterns": [
+      "(show|open|bring up)( me)?( the)? (claude|clod|clawed|cloud|clog|agent)( panel| window| chat)?",
+      "(show|open)( the)? (panel|chat)"
+    ],
+    "command": "broadcast",
+    "args": { "name": "agent.panel.toggle", "args": { "visible": true } }
+  },
+  {
+    "id": "hide-agent-panel",
+    "description": "Hide the Claude/agent panel.",
+    "patterns": [
+      "(hide|close|dismiss)( the)? (claude|clod|clawed|cloud|clog|agent)( panel| window| chat)?",
+      "(hide|close|dismiss)( the)? (panel|chat)"
+    ],
+    "command": "broadcast",
+    "args": { "name": "agent.panel.toggle", "args": { "visible": false } }
+  },
+  {
+    "id": "mode-ar",
+    "description": "Switch the headset to passthrough (AR / mixed reality).",
+    "patterns": [
+      "(switch|go|change|back|go back|switch back)( back)?( in)? ?to (ar|a r|passthrough|pass through|mixed reality|augmented reality|mr|m r)( mode)?",
+      "(enter|start|use|enable|turn on)( the)? (ar|a r|passthrough|pass through|mixed reality|augmented reality)( mode)?",
+      "(ar|a r|passthrough|pass through|mixed reality)( mode)?( on| please)?",
+      "(passthrough|pass through) on"
+    ],
+    "command": "broadcast",
+    "args": { "name": "session.mode", "args": { "mode": "ar" } }
+  },
+  {
+    "id": "mode-vr",
+    "description": "Switch the headset to full VR.",
+    "patterns": [
+      "(switch|go|change|back|go back|switch back)( back)?( in)? ?to (vr|v r|virtual reality|full vr|immersive)( mode)?",
+      "(enter|start|use|enable|turn on)( the)? (vr|v r|virtual reality)( mode)?",
+      "(vr|v r|virtual reality)( mode)?( on| please)?",
+      "(passthrough|pass through) off",
+      "(turn|switch) off( the)? (passthrough|pass through)"
+    ],
+    "command": "broadcast",
+    "args": { "name": "session.mode", "args": { "mode": "vr" } }
+  },
+  {
+    "id": "save-workspace",
+    "description": "Save the current workspace (optionally under a new name: \"save workspace as weather demo\").",
+    "patterns": [
+      "save( (the|this|my))?( (workspace|work space|space|scene|layout|everything|it|this|all))?",
+      "save( (the|this|my))? (workspace|work space|space|scene|layout) as (?<name>[a-z0-9][a-z0-9 _-]{0,40})"
+    ],
+    "command": "workspace.save",
+    "args": { "name": "$name:slug" }
+  },
+  {
+    "id": "recalibrate-origin",
+    "description": "Re-center the space origin at the user's feet, facing their gaze.",
+    "patterns": [
+      "(re ?calibrate|re ?center|re ?centre)( the)?( (origin|space|room|world|view|position|floor))?",
+      "(reset|recalibrate|recenter)( the)? (origin|space|room|world)( origin)?",
+      "(center|centre) (the )?(space|room|world) (here|on me)"
+    ],
+    "command": "broadcast",
+    "args": { "name": "origin.recalibrate" }
+  }
+]

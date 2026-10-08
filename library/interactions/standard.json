@@ -1,0 +1,32 @@
+{
+  "description": "Standard object manipulation for every entity (unless the entity is locked or overrides it): pinch an interactive part to press it, pinch anything else to grab and move it, pinch with the second hand to scale/rotate it with both hands.",
+  "scope": "entity-default",
+  "bindings": [
+    {
+      "id": "press",
+      "description": "Pinch an interactive part (registered via ctx.interactive) of a widget: delivers 'press' start/move/end to the widget.",
+      "pose": "pinch",
+      "hand": "either",
+      "target": "near",
+      "action": { "type": "widget", "handler": "press" },
+      "priority": 10
+    },
+    {
+      "id": "grab",
+      "description": "Pinch near or point-and-pinch at an entity to move it rigidly with the hand, keeping the grab offset.",
+      "pose": "pinch",
+      "hand": "either",
+      "target": "near",
+      "action": { "type": "grab" }
+    },
+    {
+      "id": "scale",
+      "description": "While one hand grabs an entity, pinch it with the other hand: move apart/together to scale, twist to rotate (yaw), move both to translate.",
+      "pose": "pinch",
+      "hand": "both",
+      "target": "near",
+      "action": { "type": "scale" },
+      "priority": 20
+    }
+  ]
+}

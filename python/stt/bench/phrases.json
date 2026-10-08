@@ -1,0 +1,11 @@
+[
+  { "id": "undo", "text": "Undo." },
+  { "id": "delete-this", "text": "Delete this." },
+  { "id": "duplicate-that", "text": "Duplicate that." },
+  { "id": "passthrough", "text": "Switch to passthrough." },
+  { "id": "show-panel", "text": "Show the Claude panel." },
+  { "id": "save", "text": "Save the workspace." },
+  { "id": "bigger-red", "text": "Make this bigger and color it red." },
+  { "id": "resid", "text": "Connect the residual flow widget to the layer slider." },
+  { "id": "chart", "text": "Create a line chart of the temperature in Seattle for the next three days and put it to the left of the sphere." }
+]

@@ -1,0 +1,12 @@
+{
+  "id": "pinch",
+  "description": "Index pinch: thumb tip touching the index tip. Other fingers free. Excludes the palm-facing-the-head orientation, which Quest reserves for its system menu gesture.",
+  "hand": "either",
+  "conditions": [
+    { "feature": "pinch.index", "max": 0.025 },
+    { "feature": "palm.towardHead", "max": 0.6 }
+  ],
+  "enterMs": 30,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}

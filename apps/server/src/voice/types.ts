@@ -1,5 +1,5 @@
 // Contract between the server core and the voice component.
-import type { ClientMessage, ServerMessage, ServerEventType, AgentState } from '@evolspace/protocol';
+import type { ClientMessage, ServerMessage, ServerEventType, AgentState, AgentStatus } from '@evolspace/protocol';
 
 type VoiceBegin = Extract<ClientMessage, { type: 'voice.begin' }>;
 type VoiceEnd = Extract<ClientMessage, { type: 'voice.end' }>;
@@ -21,6 +21,20 @@ export interface VoiceDeps {
   /** Words to bias STT toward (widget ids, entity names, ...). */
   vocabulary(): string[];
   log(level: 'info' | 'warn' | 'error', message: string): void;
+  /**
+   * Optional (added by the voice component, backward compatible): name + widget
+   * of an entity, so requests routed to Claude carry readable deictic context
+   * ("this" = entity e-7f3a "Seattle weather", widget line-chart).
+   */
+  describeEntity?(id: string): { name?: string; widget?: string } | undefined;
+  /**
+   * Optional (added by the voice component, backward compatible): the current
+   * agent status. Lets voice restore Claude's 'thinking'/'working' indicator
+   * after an utterance instead of resetting it to 'idle'.
+   */
+  agentStatus?(): AgentStatus;
+  /** Optional STT base URL (default: env EVOL_STT_URL, else http://127.0.0.1:8790). */
+  sttUrl?: string;
 }
 
 export interface VoiceService {

@@ -1,0 +1,60 @@
+{
+  "description": "Residual-stream lens rig: a resid-flow visualizer (channels interp.*) with a vertical layer slider beside the stack (knob aligned with the layer planes for 11 layers; set its max to L when the model differs) and a sample slider below. Dragging the layer slider moves the lens live and publishes interp.ctl.layer on release; both sliders follow interp.ctl.layer / interp.ctl.sample (so picks in the visualizer, voice and Claude move them). Set the sample slider's max to meta.sample.total - 1. Placed ~1 m in front of the origin at standing height.",
+  "entities": [
+    {
+      "id": "resid",
+      "name": "resid flow",
+      "widget": "resid-flow",
+      "parent": null,
+      "props": {
+        "prefix": "interp",
+        "width": 0.6,
+        "height": 0.8
+      },
+      "transform": { "position": [-0.15, 1.3, -1.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "tags": ["interp"]
+    },
+    {
+      "id": "layer-slider",
+      "name": "lens layer",
+      "widget": "slider",
+      "parent": "resid",
+      "props": {
+        "label": "layer",
+        "min": 0,
+        "max": 10,
+        "step": 1,
+        "value": 10,
+        "orientation": "vertical",
+        "length": 0.8,
+        "decimals": 0
+      },
+      "transform": { "position": [-0.42, 0, 0.3], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "tags": ["interp"]
+    },
+    {
+      "id": "sample-slider",
+      "name": "sample",
+      "widget": "slider",
+      "parent": "resid",
+      "props": {
+        "label": "sample",
+        "min": 0,
+        "max": 11,
+        "step": 1,
+        "value": 0,
+        "length": 0.4,
+        "decimals": 0
+      },
+      "transform": { "position": [0, -0.48, 0.32], "rotation": [-0.2588, 0, 0, 0.9659], "scale": [1, 1, 1] },
+      "tags": ["interp"]
+    }
+  ],
+  "links": [
+    { "from": { "kind": "port", "entity": "layer-slider", "port": "value" }, "to": { "kind": "port", "entity": "resid", "port": "layer" } },
+    { "from": { "kind": "port", "entity": "layer-slider", "port": "commit" }, "to": { "kind": "channel", "channel": "interp.ctl.layer" } },
+    { "from": { "kind": "channel", "channel": "interp.ctl.layer" }, "to": { "kind": "port", "entity": "layer-slider", "port": "value" } },
+    { "from": { "kind": "port", "entity": "sample-slider", "port": "commit" }, "to": { "kind": "channel", "channel": "interp.ctl.sample" } },
+    { "from": { "kind": "channel", "channel": "interp.ctl.sample" }, "to": { "kind": "port", "entity": "sample-slider", "port": "value" } }
+  ]
+}

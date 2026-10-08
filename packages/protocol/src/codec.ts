@@ -38,7 +38,8 @@ export function encodeTensorFrame(header: Omit<TensorFrameHeader, 'type'>, t: Te
 }
 
 export function decodeTensorFrame(frame: ArrayBuffer | Uint8Array): { header: TensorFrameHeader; tensor: TensorValue } {
-  const u8 = frame instanceof Uint8Array ? frame : new Uint8Array(frame);
+  // Re-view as a plain Uint8Array: Node Buffers are Uint8Arrays whose slice() is a view into a pooled buffer.
+  const u8 = frame instanceof Uint8Array ? new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength) : new Uint8Array(frame);
   const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
   const hlen = dv.getUint32(0, true);
   const header = JSON.parse(new TextDecoder().decode(u8.subarray(4, 4 + hlen))) as TensorFrameHeader;
@@ -62,7 +63,8 @@ export function encodeAudioFrame(utteranceId: string, pcm: Int16Array): Uint8Arr
 export function decodeAudioFrame(frame: Uint8Array): { utteranceId: string; pcm: Int16Array } {
   let id = '';
   for (let i = 4; i < 40 && frame[i] !== 0; i++) id += String.fromCharCode(frame[i]);
-  const pcm = new Int16Array(frame.slice(40).buffer);
+  // Copy via a plain Uint8Array view (Node Buffer.slice() would alias a pooled buffer).
+  const pcm = new Int16Array(new Uint8Array(frame.buffer, frame.byteOffset + 40, (frame.byteLength - 40) & ~1).slice().buffer);
   return { utteranceId: id, pcm };
 }
 
