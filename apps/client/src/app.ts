@@ -75,6 +75,10 @@ export class EvolClient {
   private micAutoWarm = false;
   /** Desktop camera FOV (three.js overwrites camera.fov with the XR one while presenting). */
   private desktopFov = 70;
+  /** Element the canvas is sized to (debug dashboard viewport); null = the window. */
+  private viewportEl: HTMLElement | null = null;
+  private viewportObserver: ResizeObserver | null = null;
+  private readonly frameHooks = new Set<(dt: number, tMs: number) => void>();
 
   constructor(readonly cfg: ClientConfig) {}
 
@@ -130,12 +134,48 @@ export class EvolClient {
     this.camera.position.set(0, 1.6, 1.6);
     this.scene.add(this.camera); // children (perf overlay) render head-locked
 
-    window.addEventListener('resize', () => {
-      if (this.xr?.active) return;
-      this.camera.aspect = window.innerWidth / window.innerHeight;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+    window.addEventListener('resize', () => this.fitViewport());
+  }
+
+  /**
+   * Render into `el` (moves the canvas there and tracks its size) instead of the
+   * whole window; `null` moves it back to `container`. Used by the debug dashboard,
+   * whose docks surround the 3D view. Mouse → ray mapping uses the canvas rect.
+   */
+  attachViewport(el: HTMLElement | null, container: HTMLElement | null = document.getElementById('app')): void {
+    this.viewportObserver?.disconnect();
+    this.viewportObserver = null;
+    this.viewportEl = el;
+    const canvas = this.renderer.domElement;
+    const parent = el ?? container ?? document.body;
+    if (canvas.parentElement !== parent) parent.appendChild(canvas);
+    if (el && typeof ResizeObserver !== 'undefined') {
+      this.viewportObserver = new ResizeObserver(() => this.fitViewport());
+      this.viewportObserver.observe(el);
+    }
+    this.fitViewport();
+  }
+
+  /** Size of the area the desktop view renders into (CSS px). */
+  viewportSize(): { width: number; height: number } {
+    const el = this.viewportEl;
+    if (el) return { width: Math.max(1, el.clientWidth), height: Math.max(1, el.clientHeight) };
+    return { width: window.innerWidth, height: window.innerHeight };
+  }
+
+  /** Resize renderer + camera aspect to the viewport (no-op while presenting XR). */
+  fitViewport(): void {
+    if (this.xr?.active || !this.renderer) return;
+    const { width, height } = this.viewportSize();
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(width, height);
+  }
+
+  /** Per-frame hook, called after runtime.update() and before render (debug overlays). */
+  onFrame(cb: (dt: number, tMs: number) => void): () => void {
+    this.frameHooks.add(cb);
+    return () => { this.frameHooks.delete(cb); };
   }
 
   private initNetAndRuntime(): void {
@@ -143,7 +183,8 @@ export class EvolClient {
     const isHeadset = /OculusBrowser|Quest|Pico|Vision/i.test(ua) && !this.cfg.emulate;
     this.net = createNet(this.cfg.wsUrl, this.role, {
       userAgent: ua,
-      capabilities: ['hands', 'voice', 'pose.record', ...(this.cfg.emulate ? ['emulated'] : [])],
+      // 'user-pose': the debug dashboard shows the headset user's live pose (server forwards it ≤15 Hz).
+      capabilities: ['hands', 'voice', 'pose.record', ...(this.cfg.emulate ? ['emulated'] : []), ...(this.cfg.debug ? ['user-pose', 'debug'] : [])],
       wantPrimary: this.role === 'xr' && isHeadset,
     });
     this.runtime = createRuntime({ scene: this.scene, net: this.net, role: this.role, renderer: this.renderer, camera: this.camera });
@@ -193,8 +234,7 @@ export class EvolClient {
         this.camera.position.set(...this.headWorld.position);
         this.camera.quaternion.set(...this.headWorld.rotation);
         this.camera.fov = this.desktopFov;
-        this.camera.aspect = window.innerWidth / window.innerHeight;
-        this.camera.updateProjectionMatrix();
+        this.fitViewport();
         if (this.desktop) { this.desktop.enabled = true; this.desktop.syncFromCamera(); }
       },
       onPending: (mode) => { if (mode) this.hud?.toast(`Pinch or click to switch to ${mode.toUpperCase()}`); },
@@ -384,6 +424,11 @@ export class EvolClient {
     } catch (e) {
       // Keep rendering: a throwing update must not freeze the view (worst in XR).
       this.reportError('runtime update failed', e);
+    }
+    if (this.frameHooks.size) {
+      for (const cb of this.frameHooks) {
+        try { cb(dt, tMs); } catch (e) { this.reportError('frame hook failed', e); }
+      }
     }
     if (this.xr.mode === 'ar' && this.scene.background) this.scene.background = null; // keep passthrough visible
     this.renderer.render(this.scene, this.camera);

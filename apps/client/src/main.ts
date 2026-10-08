@@ -2,6 +2,8 @@
 //   xr (default) — headset client (falls back to desktop controls without WebXR)
 //   desktop      — spectator / dev client with fly camera + mouse hand
 //   mirror       — the server's headless renderer (owned by the mirror component)
+// ?debug=1 (or /debug) adds the desktop debug dashboard (src/debug, lazy-loaded so the
+// headset bundle never contains it).
 
 import { parseConfig } from './config.ts';
 
@@ -27,6 +29,10 @@ async function boot(): Promise<void> {
   const client = new EvolClient(cfg);
   installHooks(client); // before start() so tests can observe the boot
   await client.start(container);
+  if (cfg.debug) {
+    const { startDebug } = await import('./debug/index.tsx');
+    await startDebug(client);
+  }
 }
 
 boot().catch((e) => {

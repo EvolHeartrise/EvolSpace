@@ -47,7 +47,7 @@ export function createHandlers(s: Services) {
       }
       case 'user.pose':
         if (!c.primary) return; // only the primary xr client defines "the user"
-        if (isUserPose(m.pose)) s.user.setPose(m.pose);
+        if (isUserPose(m.pose)) { s.user.setPose(m.pose); s.userPoseFeed.offer(m.pose); }
         else if (!c.badPoseWarned) { c.badPoseWarned = true; warn(c, 'user.pose ignored: expected {t, mode, head: {position: [x,y,z], rotation: [x,y,z,w]}, hands}'); }
         return;
       case 'channel.subscribe': {

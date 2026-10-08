@@ -11,6 +11,8 @@
     "isolatedModules": true,
     "allowImportingTsExtensions": true,
     "noEmit": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
     "types": ["node"]
   }
 }

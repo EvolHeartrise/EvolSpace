@@ -17,6 +17,7 @@ import type { UserState } from './user.ts';
 import type { SourceSupervisor } from './sources/supervisor.ts';
 import type { VoiceService } from './voice/index.ts';
 import type { Mirror } from './mirror/index.ts';
+import type { UserPoseFeed } from './ws/user-pose-feed.ts';
 
 export interface Services {
   config: ServerConfig;
@@ -32,6 +33,8 @@ export interface Services {
   gestures: GestureLibrary;
   recorder: PoseRecorder;
   user: UserState;
+  /** Forwards the primary's user.pose to `user-pose` subscribers (debug dashboards). */
+  userPoseFeed: UserPoseFeed;
   sources: SourceSupervisor;
   voice: VoiceService;
   /** Lazily started headless renderer. */

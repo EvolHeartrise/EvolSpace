@@ -70,11 +70,21 @@ export type ServerMessage =
   /** Generic command for clients, e.g. { name: 'session.mode', args: { mode: 'ar' } }, 'reload', 'select'. */
   | { type: 'command'; name: string; args?: Record<string, unknown> }
   /** Fast-path voice command result / routing notice (shown briefly in the HUD). */
-  | { type: 'voice.result'; utteranceId: string; text: string; route: 'fastpath' | 'agent' | 'none'; command?: string };
+  | { type: 'voice.result'; utteranceId: string; text: string; route: 'fastpath' | 'agent' | 'none'; command?: string }
+  /**
+   * The primary xr client's latest user.pose, forwarded (≤15 Hz, latest wins) only to clients whose hello
+   * carried the `user-pose` capability (the desktop debug dashboard). `null` = the primary went away.
+   * Also sent right after hello when a pose is known.
+   */
+  | { type: 'user.pose'; pose: UserPose | null };
 
 // ---------------------------------------------------------------- client → server
 
 export type ClientMessage =
+  /**
+   * capabilities (free-form strings) the server understands: 'no-echo' (don't send this client its own channel
+   * publishes back), 'user-pose' (forward the primary's user.pose to this client, see ServerMessage 'user.pose').
+   */
   | { type: 'hello'; role: ClientRole; userAgent?: string; capabilities?: string[]; wantPrimary?: boolean }
   | { type: 'scene.ops'; ops: SceneOp[]; source: 'user' | 'widget'; /** ops in one gesture share a group for undo */ group?: string }
   | { type: 'scene.undo' }

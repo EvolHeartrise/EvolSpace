@@ -14,6 +14,10 @@
 | 6 | `scripts/hooks/status.mjs` with UserPromptSubmit / PreToolUse / Stop JSON | `/api/agent/status` goes thinking → working → idle; with the server down the hook exits 0 within the deadline |
 | 7 | `interp-toy` source (python/evolinterp venv) + `resid-lens` prefab | `interp.*` channels appear, entity screenshots of resid-flow are non-uniform, `PUT interp.ctl.layer` switches `interp.lens.readout` to that layer; the source is stopped |
 
+`tests/e2e/debug.test.ts` covers the desktop debug dashboard (`/debug`): redirect + never primary, headset pose push,
+tree selection, Ctrl+click picking in the resized view, inspector prop edit → `/api/scene` → Ctrl+Z, Delete + undo,
+layout persistence; screenshot `data/debug-samples/debug-e2e.png`.
+
 ## Running
 
 ```bash

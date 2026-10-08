@@ -139,6 +139,15 @@ export function systemRoutes(r: Router, s: Services): void {
   r.post('/api/sources/:id/stop', async ({ params }) => { try { return await s.sources.stop(params.id); } catch (e) { return passStatus(e); } });
   r.post('/api/sources/:id/restart', async ({ params }) => { try { return await s.sources.restart(params.id); } catch (e) { return passStatus(e); } });
 
+  // ---------------------------------------------------------------- desktop debug dashboard
+  // /debug → the client in desktop role with the debug UI (other query params are kept).
+  r.get('/debug', ({ query }) => {
+    const q = new URLSearchParams(query);
+    q.set('role', 'desktop');
+    q.set('debug', '1');
+    return { $reply: true, status: 302, headers: { Location: `/?${q.toString()}`, 'Cache-Control': 'no-store' }, body: '' };
+  });
+
   // ---------------------------------------------------------------- help
-  r.get('/api', () => ({ routes: r.describe(), docs: path.posix.join('packages', 'protocol', 'src', 'api.ts') }));
+  r.get('/api',() => ({ routes: r.describe(), docs: path.posix.join('packages', 'protocol', 'src', 'api.ts') }));
 }
