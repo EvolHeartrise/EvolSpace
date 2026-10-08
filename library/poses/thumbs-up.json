@@ -1,0 +1,17 @@
+{
+  "id": "thumbs-up",
+  "description": "Thumbs up: four fingers curled, thumb extended and pointing up.",
+  "hand": "either",
+  "conditions": [
+    { "feature": "curl.index", "min": 0.6 },
+    { "feature": "curl.middle", "min": 0.6 },
+    { "feature": "curl.ring", "min": 0.6 },
+    { "feature": "curl.pinky", "min": 0.55 },
+    { "feature": "curl.thumb", "max": 0.4 },
+    { "feature": "thumb.out", "min": 0.95 },
+    { "feature": "thumb.up", "min": 0.6 }
+  ],
+  "enterMs": 120,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}

@@ -1,0 +1,12 @@
+{
+  "id": "pinch-middle",
+  "description": "Middle-finger pinch: thumb tip touching the middle-finger tip while the index stays clear of the thumb.",
+  "hand": "either",
+  "conditions": [
+    { "feature": "pinch.middle", "max": 0.025 },
+    { "feature": "pinch.index", "min": 0.03 }
+  ],
+  "enterMs": 40,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}

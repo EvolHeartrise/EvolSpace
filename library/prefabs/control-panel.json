@@ -1,0 +1,58 @@
+{
+  "description": "Example control panel: a titled panel with two sliders (Gain, Threshold), an Enabled toggle and a Reset button. Port→channel links publish every control to the data bus (ui.control.gain / .threshold / .enabled / .reset) for Python or any other consumer; port→port links make Reset put both sliders back to their defaults (link transforms return constants). Re-point the channels by editing the links after spawning.",
+  "entities": [
+    {
+      "id": "panel",
+      "parent": null,
+      "name": "control panel",
+      "widget": "panel",
+      "props": { "title": "Controls", "body": "Publishes to `ui.control.*`", "width": 0.34, "height": 0.36 },
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "visible": true
+    },
+    {
+      "id": "gain",
+      "parent": "panel",
+      "name": "gain",
+      "widget": "slider",
+      "props": { "label": "Gain", "min": 0, "max": 2, "step": 0.01, "value": 1 },
+      "transform": { "position": [0, 0.065, 0.004], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "visible": true
+    },
+    {
+      "id": "threshold",
+      "parent": "panel",
+      "name": "threshold",
+      "widget": "slider",
+      "props": { "label": "Threshold", "min": 0, "max": 1, "step": 0.05, "value": 0.5, "color": "secondary" },
+      "transform": { "position": [0, -0.025, 0.004], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "visible": true
+    },
+    {
+      "id": "enabled",
+      "parent": "panel",
+      "name": "enabled",
+      "widget": "toggle",
+      "props": { "label": "Enabled", "value": true, "color": "positive" },
+      "transform": { "position": [-0.07, -0.115, 0.004], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "visible": true
+    },
+    {
+      "id": "reset",
+      "parent": "panel",
+      "name": "reset",
+      "widget": "button",
+      "props": { "label": "Reset", "width": 0.1, "height": 0.045 },
+      "transform": { "position": [0.09, -0.115, 0.004], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "visible": true
+    }
+  ],
+  "links": [
+    { "from": { "kind": "port", "entity": "gain", "port": "value" }, "to": { "kind": "channel", "channel": "ui.control.gain" } },
+    { "from": { "kind": "port", "entity": "threshold", "port": "value" }, "to": { "kind": "channel", "channel": "ui.control.threshold" } },
+    { "from": { "kind": "port", "entity": "enabled", "port": "value" }, "to": { "kind": "channel", "channel": "ui.control.enabled" } },
+    { "from": { "kind": "port", "entity": "reset", "port": "press" }, "to": { "kind": "channel", "channel": "ui.control.reset" } },
+    { "from": { "kind": "port", "entity": "reset", "port": "press" }, "to": { "kind": "port", "entity": "gain", "port": "value" }, "transform": "1" },
+    { "from": { "kind": "port", "entity": "reset", "port": "press" }, "to": { "kind": "port", "entity": "threshold", "port": "value" }, "transform": "0.5" }
+  ]
+}

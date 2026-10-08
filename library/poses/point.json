@@ -1,0 +1,15 @@
+{
+  "id": "point",
+  "description": "Index finger extended, middle, ring and pinky curled (thumb free), in any direction.",
+  "hand": "either",
+  "conditions": [
+    { "feature": "curl.index", "max": 0.3 },
+    { "feature": "curl.middle", "min": 0.6 },
+    { "feature": "curl.ring", "min": 0.6 },
+    { "feature": "curl.pinky", "min": 0.5 },
+    { "feature": "pinch.index", "min": 0.04 }
+  ],
+  "enterMs": 80,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}

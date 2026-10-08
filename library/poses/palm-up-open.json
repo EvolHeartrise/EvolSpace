@@ -1,0 +1,16 @@
+{
+  "id": "palm-up-open",
+  "description": "Open hand held palm-up (like presenting something). Held for 300 ms to avoid accidental triggers while gesturing.",
+  "hand": "either",
+  "conditions": [
+    { "feature": "curl.index", "max": 0.35 },
+    { "feature": "curl.middle", "max": 0.35 },
+    { "feature": "curl.ring", "max": 0.4 },
+    { "feature": "curl.pinky", "max": 0.45 },
+    { "feature": "pinch.index", "min": 0.04 },
+    { "feature": "palm.up", "min": 0.7 }
+  ],
+  "enterMs": 300,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}

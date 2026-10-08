@@ -1,0 +1,15 @@
+{
+  "id": "fist",
+  "description": "Closed fist: all four fingers curled, thumb wrapped over them (not sticking out).",
+  "hand": "either",
+  "conditions": [
+    { "feature": "curl.index", "min": 0.65 },
+    { "feature": "curl.middle", "min": 0.65 },
+    { "feature": "curl.ring", "min": 0.65 },
+    { "feature": "curl.pinky", "min": 0.6 },
+    { "feature": "thumb.out", "max": 0.8 }
+  ],
+  "enterMs": 80,
+  "exitSlack": 0.15,
+  "source": "builtin"
+}
