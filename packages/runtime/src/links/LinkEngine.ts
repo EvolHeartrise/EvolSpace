@@ -15,15 +15,26 @@
 // frame (dataflow is latest-value-wins). If frames stall (rAF paused while
 // the headset is off), the counters reset by time instead.
 
-import type { Link, PortRef } from '@evolspace/protocol';
+import type { Link, PortRef, PortType } from '@evolspace/protocol';
 import { compileTransform, type CompiledTransform } from './compile.ts';
 import { Deduper, now } from '../util/rate.ts';
 
+export interface DeliverInfo {
+  /** The value comes from an `event`-typed output: a momentary trigger, never replayed. */
+  momentary: boolean;
+}
+
 export interface LinkTargets {
-  deliverInput(entity: string, port: string, value: unknown): void;
+  deliverInput(entity: string, port: string, value: unknown, info?: DeliverInfo): void;
   publish(channel: string, value: unknown): void;
   subscribe(channel: string, cb: (value: unknown) => void): () => void;
   reportError(message: string, detail: { link: string; entity?: string }): void;
+  /**
+   * Declared type of a widget's output port (from its manifest). Outputs typed
+   * `event` are momentary: their values are not cached, so a newly created link
+   * does not fire a stale trigger (e.g. an old button press).
+   */
+  outputType?(entity: string, port: string): PortType | undefined;
 }
 
 export interface LinkEngineOptions {
@@ -115,7 +126,8 @@ export class LinkEngine {
     if (l.from.kind === 'channel') {
       a.unsubscribe = this.targets.subscribe(l.from.channel, (v) => this.fire(a, v));
     } else {
-      // A newly linked output delivers its latest value right away.
+      // A newly linked output delivers its latest value right away (never
+      // for event outputs: those are not cached, see emit()).
       const k = portKey(l.from.entity, l.from.port);
       if (this.lastOutputs.has(k)) this.fire(a, this.lastOutputs.get(k));
     }
@@ -124,10 +136,20 @@ export class LinkEngine {
   /** A widget emitted on an output port. */
   emit(entity: string, port: string, value: unknown): void {
     const k = portKey(entity, port);
-    this.lastOutputs.set(k, value);
+    const momentary = this.isEvent(entity, port);
+    if (momentary) this.lastOutputs.delete(k);
+    else this.lastOutputs.set(k, value);
     const list = this.byPort.get(k);
     if (!list) return;
     for (let i = 0; i < list.length; i++) this.fire(list[i], value);
+  }
+
+  private isEvent(entity: string, port: string): boolean {
+    try {
+      return this.targets.outputType?.(entity, port) === 'event';
+    } catch {
+      return false;
+    }
   }
 
   lastOutput(entity: string, port: string): unknown {
@@ -180,7 +202,10 @@ export class LinkEngine {
     this.active.add(l.id);
     try {
       const to = l.to;
-      if (to.kind === 'port') this.targets.deliverInput(to.entity, to.port, v);
+      if (to.kind === 'port') {
+        const momentary = l.from.kind === 'port' && this.isEvent(l.from.entity, l.from.port);
+        this.targets.deliverInput(to.entity, to.port, v, momentary ? MOMENTARY : VALUE);
+      }
       else this.targets.publish(to.channel, v);
     } finally {
       this.active.delete(l.id);
@@ -203,6 +228,8 @@ export class LinkEngine {
 }
 
 const STALL_MS = 250;
+const MOMENTARY: DeliverInfo = Object.freeze({ momentary: true });
+const VALUE: DeliverInfo = Object.freeze({ momentary: false });
 
 function signature(l: Link): string {
   return JSON.stringify([l.from, l.to, l.transform ?? '', l.enabled]);

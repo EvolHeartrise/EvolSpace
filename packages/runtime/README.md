@@ -14,6 +14,7 @@ const rt = new SpaceRuntime({ scene, net, role: 'xr', renderer, camera });
 const engine = new InteractionEngine(rt.interactionHost());
 rt.onGestures((g) => { engine.setPoses(g.poses); engine.setInteractions(g.interactions); });
 rt.registerLocalCommand('voice.ptt', (args, phase) => …);      // also session.mode, origin.recalibrate
+rt.setEnvironment({ grid: mode !== 'ar' });                     // on every session mode change
 rt.system.recording.onPhase((phase, req) => …);                 // 'countdown' | 'recording' | 'done' | 'cancelled'
 // per frame:
 rt.root.position/quaternion = spaceOrigin;                      // anchor
@@ -26,10 +27,12 @@ rt.update(dt, t); renderer.render(scene, camera);
 
 | Path | What |
 |---|---|
-| `src/net/NetClient.ts` | WebSocket with reconnect/backoff and a connect timeout, hello (adds the `no-echo` capability), typed `on(type)`, tensor frames (`onTensor`), ref-counted channel subscriptions (resubscribed after reconnect), a bounded queue for durable messages |
+| `src/net/NetClient.ts` | WebSocket with reconnect/backoff, a connect timeout and a liveness heartbeat, hello (adds the `no-echo` capability), typed `on(type)`, tensor frames (`onTensor`), ref-counted channel subscriptions (resubscribed after reconnect), a bounded queue for durable messages |
+| `src/net/passive.ts` | `passiveNetPort`: the send filter a mirror runtime uses (only errors, logs and channel subscriptions go out) |
 | `src/data/ChannelHub.ts` | latest value per channel, local listeners, optimistic local publish with echo suppression |
 | `src/scene/SceneMirror.ts` | pure copy of `SceneState`: snapshot/ops → `SceneDiff` (exact `scene.ts` semantics, stale-version rejection, cycle guard) |
 | `src/scene/Reconciler.ts` | diff → `THREE.Group` per entity (`entity:<id>`, `userData.entityId`), hierarchy, orphan adoption, anchors, local transform previews |
+| `src/scene/FloorGrid.ts` | `createFloorGrid(theme)`: faint 10 m floor grid with a 1 m cell size and an origin marker, drawn as one `LineSegments` |
 | `src/scene/anchors.ts` | `AnchorRig` (head, hand joints) and `LazyFollower` (lazy head-follow: yaw only, re-centers when content leaves the view) |
 | `src/scene/SceneWriter.ts` | outgoing widget edits: optimistic, throttled (100 ms leading+trailing), echo-safe field ownership |
 | `src/widgets/WidgetHost.ts` | widget lifecycle, module cache by hash, hot reload with a flicker-free swap, error isolation → fallback |
@@ -54,6 +57,19 @@ rt.update(dt, t); renderer.render(scene, camera);
   `user.pose` messages are skipped so they can't delay ops and commands.
   While offline, durable messages (ops, commands, publishes, errors) are
   queued, up to 256, and ephemeral ones (poses, voice, audio) are dropped.
+- **Heartbeat.** Browsers never see the server's WebSocket-level pings, so a
+  dead path (Wi-Fi roam, PC asleep) can leave the socket looking open for
+  minutes. Any inbound frame counts as liveness. After 10 s without one, the
+  client sends a light probe, `{type:'command', name:'ping'}`, at most once
+  per 10 s. A reconnect is forced in two cases. (a) The server has answered a
+  probe at least once with `{type:'command', name:'pong'}` (the answer is
+  swallowed) and then nothing arrives for 30 s. (b) The socket's send buffer
+  stays backed up without draining for 20 s while nothing arrives. A quiet
+  server that never answers probes is never dropped for being quiet. If an
+  older server answers the probe with "Command 'ping' failed…", that message
+  is swallowed and probing stops for that connection. Configure with
+  `heartbeat: { probeMs, timeoutMs, stallMs }`, or turn it off with
+  `heartbeat: false`.
 
 - **Scene sync.** Snapshots are diffed against the current state, so a
   reconnect never re-creates unchanged widgets. Patches whose `version` is not
@@ -101,8 +117,16 @@ rt.update(dt, t); renderer.render(scene, camera);
   link fires at most 32 times per frame. Values over that cap are not lost:
   the latest one is delivered at the next frame. If frames stall (the render
   loop pauses while the headset is off), the cap resets every 250 ms instead.
-  When a link is added, the source port's last output is replayed through it. Inputs that arrive before a widget
-  is ready are replayed into `onInput` after `create`.
+  When a link is added, the source port's last output is replayed through it.
+  The exception is outputs whose manifest type is `event` (momentary triggers):
+  they are never cached, so a new link from `button.press` does not fire a
+  stale press. Inputs that arrive before a widget is ready are replayed into
+  `onInput` after `create`, and all value inputs are replayed again when the
+  widget is re-created (hot reload, prop-driven re-create). Momentary inputs
+  are never replayed on a re-create. These are values from an `event` output,
+  or values into an input declared `event`, such as `Reset.press → slider.value`
+  with transform `1`. If one arrives while no instance is ready, it is
+  delivered once to the next instance.
 - **Channels.** Subscriptions are ref-counted end to end. A local publish
   reaches local listeners immediately. The server doesn't echo it (`no-echo`),
   and if an echo comes anyway it is ignored. Tensors are sent as binary frames
@@ -116,7 +140,9 @@ rt.update(dt, t); renderer.render(scene, camera);
   `scene.ops` (source `user`) on move and a final op on end, and gives all ops
   of the gesture one `group` for undo. A pinch released without moving the
   entity sends nothing, so it leaves no empty undo step. Locked entities
-  ignore it, and an entity removed mid-gesture gets no further ops. `deliver`
+  ignore it. An entity that is removed or locked mid-gesture gets no further
+  ops: its gesture state is dropped at once (`activeGestures()` lists the
+  live ones), and the local preview of a locked entity snaps back. `deliver`
   recomputes `localPoint` in `ctx.root` coordinates. For `runCommand`, local
   commands get both phases. Server commands are one-shot and are sent on
   `start` only.
@@ -126,7 +152,20 @@ rt.update(dt, t); renderer.render(scene, camera);
   object registered with `ctx.interactive()` gives `hit.interactive = true`.
   When nothing precise is hit, a box hit still counts (forgiving grabs), ranked
   after precise hits. Touch prefers interactive parts, then the nearest box,
-  then the smallest box (the most specific one).
+  then the smallest box (the most specific one). Touch skips an interactive
+  that is no longer under the entity's content root. That happens when a
+  widget rebuilds and detaches its old meshes without telling the host. If
+  the object was attached once, it is also dropped from the registry. An
+  object registered before it was attached is kept until it shows up. The
+  registry is also swept as it grows.
+- **Bounds.** An `InstancedMesh` is bounded by its own `boundingBox` (all
+  instances), both in the broad phase and in `frameEntity`, which is used for
+  mirror framing. Cached geometry and instance bounds are only trusted while
+  the data is unchanged. When a position attribute's version changes (or the
+  attribute is replaced), or the `instanceMatrix` version or `count` changes,
+  the cached box and sphere are dropped and recomputed. This also keeps
+  three's raycast early-out (bounding sphere) correct for widgets that
+  rewrite vertices.
 - **Pointer visuals.** The ray beam and cursor follow the ray hit
   (`setPointerRays`). The hover highlight and the `select` target follow
   `host.hover()`, where the engine reports the near target (touch preferred
@@ -134,10 +173,36 @@ rt.update(dt, t); renderer.render(scene, camera);
   both.
 - **Local commands.** Built in: `select` (`{entity: id}` selects it and
   `{entity: null}` clears; without `entity` it takes the hovered entity, and
-  selecting the selected one again toggles it off), `agent.panel.toggle`,
-  `agent.panel.scroll {delta}` and `pose.record.cancel`. The client registers
+  selecting the selected one again toggles it off), `agent.panel.toggle`
+  (`{visible: true|false}` shows/hides it; without a boolean `visible` it
+  toggles), `agent.panel.scroll {delta}`, `grid.toggle` (`{visible?}`, same
+  rule) and `pose.record.cancel`. The client registers
   more with `registerLocalCommand`. A `command` message from the server runs a
   local command with phase `start`.
+- **Environment (floor grid).** A faint floor grid marks the space origin. It
+  is 10 × 10 m with 1 m cells, fades out with distance from the origin, and
+  has a small origin marker: a red-ish +X tick and a blue-ish +Z tick. It is
+  one `LineSegments` with RGBA vertex colors: one draw call, unlit, no depth
+  writes, never hit-tested. It is a child of the scene (not of `root`, so it
+  never counts toward bounds computed over `root`) and follows `root`'s world
+  transform in `update()`. It is on by default when the scene comes from the
+  net (headset, mirror space view) and off for local scenes
+  (`sceneFromNet: false`, the mirror studio, which draws its own floor);
+  override with the `grid` option. The runtime does not know the XR session
+  mode, so the client calls `rt.setEnvironment({ grid: mode !== 'ar' })` on
+  every mode change (the grid would cover the passthrough floor). The local
+  command `grid.toggle` and `rt.environment` cover the rest.
+- **Mirror is passive.** With `isMirror` (role `mirror`), the runtime wraps
+  its net port in `passiveNetPort`. Widget side effects never reach the
+  server: `setProps`/`spawnChild` scene ops, `widget.event`, `agent.ask`,
+  channel publishes (from `ctx.channels.publish`, port→channel links and
+  tensor frames), forwarded commands, pose events and gesture ops. They
+  still apply locally (optimistic scene edits, local channel listeners), so
+  screenshots show them. Errors and logs still go out, and the server tags
+  them with the connection role (`mirror`). Channel subscriptions also go
+  out. The mirror's own `passivePort` wrapper (`apps/client/src/mirror`)
+  stays compatible: it sees the same errors as before, and everything else
+  is filtered twice.
 - **UI kit.** `ui.material()` and `ui.panel()` return cached, shared resources
   (`userData.evolShared`). Widgets must `clone()` a material before mutating
   it. `ui.color(ramp, t, target?)`: `sequential` takes t in [0, 1],
@@ -203,3 +268,9 @@ fake widget loader, runtime factory) are in `test/helpers.ts`.
   `rt.selected` in `user.pose.selected`.
 - The mirror can use `applySnapshot`/`applyPatch`, `whenIdle()` (wait for
   widget loads before a screenshot), `frameEntity(id)` and `sceneFromNet: false`.
+- The client should call `rt.setEnvironment({ grid: mode !== 'ar' })` whenever
+  the XR session mode changes (desktop/VR: grid on; AR: off).
+- Server: the heartbeat works best when the `ping` command answers the
+  sender with `{type:'command', name:'pong'}`. Without an answer, the client
+  still probes and still detects send stalls, but it cannot use silence
+  alone to decide that the connection is dead.

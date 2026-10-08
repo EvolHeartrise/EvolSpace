@@ -16,7 +16,7 @@ import { checkPropValue } from './lint.ts';
 import { mount, type Harness } from './harness.ts';
 
 const LIBRARY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NOT_OURS = new Set(['resid-lens.json']);
+const NOT_OURS = new Set<string>();
 const FILES = readdirSync(path.join(LIBRARY, 'prefabs')).filter((f) => f.endsWith('.json') && !NOT_OURS.has(f)).sort();
 const CHANNEL_RE = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/;
 

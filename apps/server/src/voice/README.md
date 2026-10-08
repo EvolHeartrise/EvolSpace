@@ -62,7 +62,10 @@ The command file format is documented in `library/voice/README.md`.
   can never clobber each other. Audio for unknown ids or from the wrong client
   is ignored. Ids are truncated to 36 chars everywhere, the size of the
   AudioFrame field. A new `voice.begin` from the same client supersedes a lost
-  one. Utterances with no audio or end for 10 s are dropped. Non-16 kHz rates
+  one. Utterances with no audio or end for 10 s are dropped, and a client's
+  recordings are dropped immediately when its WebSocket closes
+  (`onDisconnect`, called by the server core; event `voice.utterance` with
+  `reason: 'disconnected'`). Non-16 kHz rates
   (8–48 kHz) are passed through, and the STT service resamples them. After
   `close()`, in-flight transcriptions do not run commands.
 - **Matching**: the matcher tries the plain normalized text first, then every

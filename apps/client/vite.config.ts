@@ -42,6 +42,9 @@ function standaloneProxy(): Plugin {
 export default defineConfig({
   root: here,
   base: '/',
+  // Isolated dep-optimizer cache (tests/e2e runs a second server next to the user's
+  // and must not re-optimize — and thereby reload — the shared node_modules/.vite).
+  ...(process.env.EVOL_VITE_CACHE_DIR ? { cacheDir: process.env.EVOL_VITE_CACHE_DIR } : {}),
   publicDir: 'public',
   plugins: [standaloneProxy()],
   server: {

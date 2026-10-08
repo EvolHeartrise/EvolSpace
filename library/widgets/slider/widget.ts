@@ -1,8 +1,11 @@
 // slider: a numeric control. Pinch the knob (or anywhere on the track) and
 // move the hand to drag; poke the track to jump. Emits `value` while it
 // changes and `commit` when the drag ends; persists its value into the scene
-// (throttled) so it survives reloads. Input `value` sets it without
-// persisting (e.g. when a channel drives it).
+// (throttled) so it survives reloads -- also values arriving on the `value`
+// input (e.g. from a channel), so the knob comes back where it was.
+// Does NOT emit on create unless `emitOnCreate` (a `value -> channel` link
+// would otherwise overwrite the channel every time a client loads the scene).
+// Inputs `min` / `max` override the range props (link them from data).
 
 import type { InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
 import type * as THREE from 'three';
@@ -28,6 +31,7 @@ interface SliderProps extends Record<string, unknown> {
   decimals: number;
   unit: string;
   color: string;
+  emitOnCreate: boolean;
 }
 
 const KNOB = 0.022; // knob diameter (m)
@@ -37,8 +41,12 @@ const PERSIST_MS = 250;
 const definition: WidgetDefinition<SliderProps> = {
   description:
     'Numeric slider: pinch-drag the knob (or the track) to change `value` within [min, max] snapped to `step`; poke the track to jump. ' +
-    'Outputs `value` on every change and `commit` when a drag ends; input `value` sets it. Shows label + formatted value; persists the value.',
-  version: '1.0.0',
+    'Outputs `value` on every change and `commit` when a drag/jump ends; input `value` sets it, inputs `min`/`max` override the range ' +
+    "(e.g. link #interp.meta with transform 'x.sample.total - 1' to max). Shows label + formatted value; persists the value (drags and inputs, throttled). " +
+    'Pitfalls: it does NOT emit `value` on create unless emitOnCreate=true (set it when a local consumer needs the initial value, e.g. a read-out). ' +
+    'Link `commit`, not `value`, to a shared control channel: `value` also fires during drags and on inputs. A value input outside the range is clamped ' +
+    'for display but remembered, so it re-applies when a later `max` input widens the range.',
+  version: '1.1.0',
   props: {
     min: { type: 'number', default: 0 },
     max: { type: 'number', default: 1 },
@@ -51,12 +59,19 @@ const definition: WidgetDefinition<SliderProps> = {
     decimals: { type: 'integer', default: -1, min: -1, max: 10, description: 'Decimals in the value read-out; -1 = derived from step.' },
     unit: { type: 'string', default: '', description: 'Unit suffix for the read-out.' },
     color: { type: 'color', default: 'accent', description: 'Fill/knob color.' },
+    emitOnCreate: {
+      type: 'boolean',
+      default: false,
+      description: 'Emit `value` once on create (its stored value). Off by default: a value->channel link would overwrite shared channel state on every client load.',
+    },
   },
   inputs: {
-    value: { type: 'number', description: 'Sets the value (clamped/snapped); re-emitted on `value` if it changed. Not persisted.' },
+    value: { type: 'number', description: 'Sets the value (clamped/snapped); re-emitted on `value` if it changed; persisted (throttled); no `commit`.' },
+    min: { type: 'number', description: 'Overrides the `min` prop (not persisted), e.g. linked from data. Non-finite values are ignored.' },
+    max: { type: 'number', description: 'Overrides the `max` prop (not persisted), e.g. linked from #interp.meta with transform "x.sample.total - 1".' },
   },
   outputs: {
-    value: { type: 'number', description: 'Current value; emitted on create and whenever it changes.' },
+    value: { type: 'number', description: 'Current value; emitted whenever it changes (on create only with emitOnCreate).' },
     commit: { type: 'number', description: 'Final value when a drag/jump ends (use for expensive consumers).' },
   },
   interactions: [dragBinding('slider-drag', 'drag')],
@@ -64,6 +79,11 @@ const definition: WidgetDefinition<SliderProps> = {
   create(ctx) {
     const T = ctx.THREE;
     let value = Number.NaN;
+    /** Last requested value (props/input/drag) before clamping: re-applied when the range changes. */
+    let target = Number.NaN;
+    /** Range overrides from the `min` / `max` inputs (NaN = use the prop). */
+    let minIn = Number.NaN;
+    let maxIn = Number.NaN;
     let group: THREE.Group | null = null;
     let track: THREE.Group | null = null;
     let fill: THREE.Mesh | null = null;
@@ -71,10 +91,13 @@ const definition: WidgetDefinition<SliderProps> = {
     let knobVis: KnobVisual | null = null;
     let valueText: Text | null = null;
     let dragStartValue = 0;
-    const persist = new Throttle<number>((v) => ctx.setProps({ value: v }), PERSIST_MS);
+    const persist = new Throttle<number>((v) => {
+      if (v !== ctx.props.value) ctx.setProps({ value: v });
+    }, PERSIST_MS);
 
     const range = () => {
-      const { min, max } = ctx.props;
+      const min = Number.isFinite(minIn) ? minIn : ctx.props.min;
+      const max = Number.isFinite(maxIn) ? maxIn : ctx.props.max;
       return Number.isFinite(min) && Number.isFinite(max) && max !== min ? { min, max } : { min: 0, max: 1 };
     };
     const axis = (): [number, number, number] => (ctx.props.orientation === 'vertical' ? [0, 1, 0] : [1, 0, 0]);
@@ -138,7 +161,8 @@ const definition: WidgetDefinition<SliderProps> = {
       // Card geometry.
       let W: number, H: number, trackX: number, trackY: number;
       if (vertical) {
-        const labelW = Math.max(estimateTextWidth(p.label, ls), estimateTextWidth(format(range().max), ls));
+        const { min: lo, max: hi } = range();
+        const labelW = Math.max(estimateTextWidth(p.label, ls), estimateTextWidth(format(hi), ls), estimateTextWidth(format(lo), ls));
         W = Math.max(0.07, labelW + 2 * pad);
         H = pad + (p.label ? row : 0) + L + KNOB + (p.showValue ? row : 0) + pad;
         trackX = 0;
@@ -246,14 +270,31 @@ const definition: WidgetDefinition<SliderProps> = {
       valueText?.set(format(value));
     }
 
-    function setValue(raw: number, source: 'user' | 'input' | 'props' | 'init'): void {
+    function setValue(raw: number, source: 'user' | 'input' | 'props' | 'init' | 'range'): void {
       if (!Number.isFinite(raw)) return;
       const v = quantize(raw);
+      // Remember what was asked for: a value beyond a not-yet-linked `max` re-applies once
+      // the range widens. User drags are always in range; a range change keeps the target.
+      if (source !== 'range') target = source === 'user' ? v : raw;
+      // Inputs persist what was requested (snapped when in range) so the knob survives
+      // reloads. Throttled; never from the mirror (it renders snapshots, must not write).
+      if (source === 'input' && !ctx.isMirror) {
+        const { min, max } = range();
+        persist.call(raw >= min && raw <= max ? v : raw);
+      }
       if (v === value) return;
+      const first = Number.isNaN(value);
       value = v;
       render();
+      if (source === 'init' && first && !ctx.props.emitOnCreate) return;
       ctx.emit('value', v);
       if (source === 'user') persist.call(v);
+    }
+
+    /** Range inputs changed: rebuild (ticks, card width) and re-apply the requested value. */
+    function rangeChanged(): void {
+      build();
+      setValue(Number.isFinite(target) ? target : value, 'range');
     }
 
     build();
@@ -266,16 +307,21 @@ const definition: WidgetDefinition<SliderProps> = {
         // An unchanged one must not: the current value may come from an input link
         // (not persisted) and an unrelated prop edit would otherwise revert it.
         const valueChanged = p.value !== prev.value && Number.isFinite(p.value);
-        if (valueChanged && !drag.dragging && quantize(p.value as number) !== value) setValue(p.value as number, 'props');
+        if (valueChanged && !drag.dragging) setValue(p.value as number, 'props');
         else {
-          // Range/step may have changed: re-clamp.
-          const v = quantize(value);
-          if (v !== value) setValue(v, 'props');
-          else render();
+          // Range/step may have changed: re-clamp (a remembered out-of-range request may fit now).
+          setValue(Number.isFinite(target) ? target : value, 'range');
+          render();
         }
       },
       onInput(port, v) {
-        if (port === 'value') setValue(toScalar(v), 'input');
+        if (port === 'value') return setValue(toScalar(v), 'input');
+        if (port !== 'min' && port !== 'max') return;
+        const n = toScalar(v);
+        if (!Number.isFinite(n) || n === (port === 'min' ? minIn : maxIn)) return;
+        if (port === 'min') minIn = n;
+        else maxIn = n;
+        rangeChanged();
       },
       onInteraction(e: InteractionEvent) {
         drag.handle(e);

@@ -126,7 +126,7 @@ export const eventsTool = defineTool({
   title: 'Server event log',
   readOnly: true,
   description:
-    'Read the server event log (client errors/logs, widget builds, voice utterances, pose events, widget events, source exits, scene changes, agent asks). ' +
+    'Read the server event log (client errors/logs, widget builds, gesture reloads (gestures.load: errors/warnings after editing library/poses or library/interactions), voice utterances, pose events, widget events, source exits, scene changes, agent asks). ' +
     'Without since: the last `limit` events. With since: events after that cursor; wait (ms, ≤30000) long-polls for new ones. Ends with next=<cursor>.',
   input: z.strictObject({
     since: z.number().int().min(0).optional(),

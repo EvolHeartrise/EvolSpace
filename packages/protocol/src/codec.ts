@@ -25,7 +25,14 @@ export function makeTensor(dtype: DType, shape: number[], data: ArrayBufferView 
   return { $tensor: true, dtype, shape, data: view };
 }
 
-export function encodeTensorFrame(header: Omit<TensorFrameHeader, 'type'>, t: TensorValue): Uint8Array {
+/**
+ * Header fields besides `channel` are optional; `dtype`/`shape` always come from
+ * the tensor (any values passed in the header are ignored).
+ */
+export function encodeTensorFrame(
+  header: Omit<TensorFrameHeader, 'type' | 'dtype' | 'shape'> & Partial<Pick<TensorFrameHeader, 'dtype' | 'shape'>>,
+  t: TensorValue,
+): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify({ ...header, type: 'channel.value', dtype: t.dtype, shape: t.shape }));
   const headEnd = 4 + json.length;
   const dataStart = Math.ceil(headEnd / 8) * 8;

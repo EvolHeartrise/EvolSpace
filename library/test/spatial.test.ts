@@ -199,7 +199,9 @@ describe('instanced bounds (runtime picker/framing view)', () => {
     h.dispose();
     h = await mount(lineWidget, { radius: 0.005, points: [[0, 0, 0], [0.1, 0, 0]] });
     const t = pickerBounds(h.root.getObjectByName('tube')!).getSize(new THREE.Vector3());
-    expect(t.x).toBeCloseTo(0.11, 6);
+    // Segment length 0.1 (+ the end-cap radius when the declared fit box is used).
+    expect(t.x).toBeGreaterThan(0.0999);
+    expect(t.x).toBeLessThan(0.1101);
     expect(t.y).toBeCloseTo(0.01, 6);
   });
 });

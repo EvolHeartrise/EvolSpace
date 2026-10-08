@@ -184,6 +184,7 @@ class ToyAdapter(Adapter):
         self.n_layers, self.n_heads, self.d_model, self.n_tokens = cfg.n_layers, cfg.n_heads, cfg.d_model, cfg.seq_len
         self.model_id = f"toy-{cfg.key()}"
         self.model_name = f"toy red-majority transformer ({cfg.n_layers}L d{cfg.d_model} h{cfg.n_heads})"
+        self.short_name = f"toy red-majority · {cfg.n_layers}L d{cfg.d_model}"
         self.lens_description = ("final LayerNorm + unembedding applied to the residual at the selected layer/token "
                                  "(answer = most frequent shape among red items, read from CLS)")
 

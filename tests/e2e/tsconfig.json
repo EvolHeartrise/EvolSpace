@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // `npx tsc -p tests/e2e` — the suite reaches into server/client/runtime sources.
+  "include": ["*.ts", "../../packages/runtime/src/types/*.d.ts", "../../apps/client/src/env.d.ts"]
+}

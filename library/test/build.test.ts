@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkDefinition } from './lint.ts';
 
 const LIBRARY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NOT_OURS = new Set(['resid-flow']);
+const NOT_OURS = new Set<string>();
 export const WIDGETS = readdirSync(path.join(LIBRARY, 'widgets'), { withFileTypes: true })
   .filter((d) => d.isDirectory() && !NOT_OURS.has(d.name) && existsSync(path.join(LIBRARY, 'widgets', d.name, 'widget.ts')))
   .map((d) => d.name)
@@ -79,6 +79,6 @@ describe('widget bundles', () => {
       const mod = (await import(/* @vite-ignore */ pathToFileURL(file).href)) as { default?: unknown };
       expect(typeof mod.default).toBe('object');
       expect(checkDefinition(mod.default)).toEqual([]);
-    });
+    }, 30_000); // esbuild under a loaded full-suite run (resid-flow is the largest bundle)
   }
 });

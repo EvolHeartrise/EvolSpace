@@ -131,6 +131,9 @@ src/ui/hud.ts          voice/recording/toast feedback → runtime SystemUi + pag
   `getJointPose` fallback; matrices are converted straight into space-frame
   joints without three.js objects. Virtual hands render in VR (toggle) and are
   off by default in AR (real hands visible through passthrough).
+- **Floor grid** (the runtime's, `src/xr/environment.ts`). Hidden while an AR session
+  runs (it would cover the real floor), restored to its previous value (default on, or
+  whatever `grid.toggle` set) when AR ends or switches to VR.
 - **Push-to-talk.** The mic graph is warmed on the first gesture on a headset
   (or "Enable mic"), kept alive with a 250 ms pre-roll ring so the first
   syllable isn't clipped, and released after 5 idle minutes. AudioWorklet

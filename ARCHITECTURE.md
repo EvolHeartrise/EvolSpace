@@ -57,7 +57,8 @@ your final report.
   (`tsx` on the server, Vite in the browser) — no build step for packages.
   Packages export `./src/index.ts`.
 - Typecheck: `npx tsc -p tsconfig.json` at the repo root (covers packages, apps, library).
-- Tests: `vitest` (`npx vitest run <path>`). Put tests in `<pkg>/test/*.test.ts`.
+- Tests: `vitest` (`npx vitest run <path>`). Put tests in `<pkg>/test/*.test.ts`. Full-stack e2e
+  (real server + bridge + browser client + mirror + interp): `EVOL_E2E=1 npx vitest run tests/e2e` (see `tests/e2e/README.md`).
 - npm: NEVER run a bare `npm install` concurrently with other agents. Use
   `node scripts/npm-locked.mjs install <pkg> -w <workspace>` to add deps.
 - Python: each Python project has its own `uv` venv (`uv venv --python 3.12`
@@ -159,12 +160,14 @@ The STT service runs as a supervised source (`library/sources/stt/source.json`).
 
 ### Commands
 One registry name space. The client tries `runtime.runLocalCommand` first
-(e.g. `voice.ptt`, `select`, `agent.panel.toggle`, `session.mode`,
+(e.g. `voice.ptt`, `select`, `agent.panel.toggle {visible?}`, `grid.toggle {visible?}`, `session.mode`,
 `origin.recalibrate`); unknown names go to the server as `{type:'command'}`.
 Server commands (apps/server/src/commands.ts) include `undo`, `redo`,
 `delete` {entity}, `duplicate` {entity}, `workspace.save` {name?},
 `screenshot` (logs a screenshot for the agent), `broadcast` {name, args}
-(forwards a command to all xr clients), `agent.ask` {text}. Other components
+(forwards a command to all xr clients), `agent.ask` {text}, `channel.publish` {channel, value},
+`ping` (liveness probe; over WebSocket the sender gets `{type:'command', name:'pong'}`, which the
+runtime NetClient consumes). Other components
 register their own server commands via the registry.
 
 ## Agent integration (how Claude sees and acts)
@@ -189,17 +192,18 @@ Channel prefix `P` (default `interp`). All tensors row-major float32 unless note
 
 | Channel | Type | Meaning |
 |---|---|---|
-| `P.meta` | JSON | `{ model, checkpoint?, layers: string[] /*L+1 labels: "embed","b0".."b{L-1}"*/, tokens: {label, group?}[] /*T*/, d_model, sample: {index, total, label}, lens: {kind, description} }` |
-| `P.resid.proj` | f32 `[L+1, T, 3]` | residual stream per layer/token projected to 3D with a basis shared across layers (PCA over a reference dataset), scaled to roughly unit range |
+| `P.meta` | JSON | `{ model /*readable name, never a path*/, short_name?, checkpoint?, proj?: {normalized, basis, explained_variance}, layers: string[] /*L+1 labels: "embed","b0".."b{L-1}"*/, tokens: {label, group?}[] /*T*/, d_model, sample: {index, total, label}, lens: {kind, description} }` |
+| `P.resid.proj` | f32 `[L+1, T, 3]` | residual stream per layer/token projected to 3D with a basis shared across layers (PCA over a reference dataset), scaled to roughly unit range. With `meta.proj.normalized` the vectors are RMS-normalized first (direction only; magnitudes are in `P.resid.norm`) |
 | `P.resid.norm` | f32 `[L+1, T]` | L2 norm of each residual vector |
 | `P.resid.delta` | f32 `[L, 2, T]` | norms of the attention (0) and MLP (1) writes in block l |
 | `P.resid.mask` | u8 `[L+1, T]` | 1 where the residual exists/is meaningful (padding slots, uncomputed positions = 0) |
 | `P.attn` | f32 `[L, H, T, T]` | optional attention patterns (query × key) |
-| `P.probe.<name>` | f32 `[L+1, T]` | linear-probe score at each layer/token (`P.probe.index` JSON lists probe names) |
+| `P.probe.<name>` | f32 `[L+1, T]` | signed linear-probe score in [-1, 1] at each layer/token, NaN = not applicable (`P.probe.index` JSON lists probe names) |
 | `P.lens.readout` | JSON | `{ layer, token, title, items: {label, value}[] }` — logit-lens-style decode of the residual at the selected layer/token |
 | `P.ctl.layer` | number (in) | selected lens layer (widgets publish; interp listens) |
 | `P.ctl.token` | number (in) | selected token index |
 | `P.ctl.sample` | number (in) | dataset sample index / frame |
 | `P.ctl.play` | boolean (in) | auto-advance samples |
+| `P.status` | JSON | producer state + `owner {id, pid, host, source, model, prefix, since}` and `ts`, re-published every 5 s; one producer per prefix (a second one refuses to start), `state: "stopped"` on a clean exit |
 
 The interp process re-publishes the data channels whenever a control changes.

@@ -5,7 +5,10 @@ export type { NetClientOptions, NetStatus, WebSocketLike, WebSocketCtor, TensorL
 export type { NetPort } from './net/types.ts';
 
 export { SpaceRuntime } from './SpaceRuntime.ts';
-export type { SpaceRuntimeOptions, GestureDefs } from './SpaceRuntime.ts';
+export type { SpaceRuntimeOptions, GestureDefs, RuntimeEnvironment } from './SpaceRuntime.ts';
+export { createFloorGrid } from './scene/FloorGrid.ts';
+export type { FloorGridOptions } from './scene/FloorGrid.ts';
+export { passiveNetPort, PASSIVE_ALLOWED } from './net/passive.ts';
 
 export { ChannelHub } from './data/ChannelHub.ts';
 export { SceneMirror, applyPatch, normalizeEntity, entityChanges } from './scene/SceneMirror.ts';
@@ -20,6 +23,7 @@ export type { ModuleLoader, WidgetRecord, WidgetStatus } from './widgets/WidgetH
 export { resolveProps, coerce } from './widgets/props.ts';
 
 export { LinkEngine } from './links/LinkEngine.ts';
+export type { LinkTargets, DeliverInfo } from './links/LinkEngine.ts';
 export { compileTransform } from './links/compile.ts';
 
 export { Picker } from './interaction/Picker.ts';

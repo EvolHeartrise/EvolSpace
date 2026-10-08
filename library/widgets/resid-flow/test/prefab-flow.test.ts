@@ -68,6 +68,31 @@ describe.skipIf(!slider)('resid-lens prefab dataflow', () => {
     });
   }
 
+  for (const order of orders) {
+    it(`slider ranges follow interp.meta; a big sample index survives the default max (${order.join(' → ')})`, async () => {
+      const server = session();
+      const meta = server['interp.meta'] as { sample: { index: number; total: number }; layers: string[] };
+      server['interp.meta'] = { ...meta, sample: { ...meta.sample, index: 1500, total: 2048 } };
+      server['interp.ctl.sample'] = 1500;
+      const rig = new Rig(prefab, defs(), server);
+      for (const id of order) await rig.create(id);
+      rig.frame();
+      expect(ctlPublishes(rig)).toEqual([]);
+      // Prefab default max is 11: ctl.sample 1500 must not be clamped for good (or persisted clamped).
+      expect(lastEmit(rig, 'sample-slider', 'value')).toBe(1500);
+      expect(rig.entities.get('sample-slider')!.ctx.props.value).toBe(1500);
+      expect(lastEmit(rig, 'layer-slider', 'value')).toBe(4);
+      // Smaller model: the layer slider's max follows meta.layers.
+      rig.serverPublish('interp.meta', { ...meta, layers: ['embed', 'b0', 'b1', 'b2'], sample: { index: 3, total: 10 } });
+      expect(lastEmit(rig, 'layer-slider', 'value')).toBe(3);
+      expect(lastEmit(rig, 'sample-slider', 'value')).toBe(9);
+      // Partial meta (no sample / layers) is filtered by the transforms, not an error.
+      rig.serverPublish('interp.meta', { model: 'x' });
+      expect(ctlPublishes(rig)).toEqual([]);
+      expect(rig.errors).toEqual([]);
+    });
+  }
+
   it('routes picks, slider drags and channel changes without duplicate publishes', async () => {
     const rig = new Rig(prefab, defs(), session());
     for (const id of ['resid', 'layer-slider', 'sample-slider']) await rig.create(id);

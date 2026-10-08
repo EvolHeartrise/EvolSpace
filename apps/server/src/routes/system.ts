@@ -9,7 +9,7 @@ import { CommandError } from '../commands.ts';
 import { RecordError } from '../gestures/recorder.ts';
 import { SourceError } from '../sources/supervisor.ts';
 import type { Services } from '../services.ts';
-import { ScreenshotRequestError } from '../mirror/index.ts';
+import { mirrorHttpError } from './mirror-errors.ts';
 
 const passStatus = (e: unknown): never => {
   if (e instanceof CommandError || e instanceof RecordError || e instanceof SourceError) throw new HttpError(e.status, e.message);
@@ -83,20 +83,28 @@ export function systemRoutes(r: Router, s: Services): void {
     }
     if (view.kind === 'user' && !s.user.latest) throw new HttpError(409, 'no headset pose available for a user view (is the primary xr client connected?) — use view.kind camera/entity/widget');
     if (view.kind === 'entity' && !s.store.entity(view.entity)) throw new HttpError(404, `entity '${view.entity}' does not exist`);
-    const request = { ...b, view } as ScreenshotRequest;
-    try {
-      const png = await (await s.mirror()).screenshot(request);
-      return reply(png, 'image/png', 200, { 'Cache-Control': 'no-store' });
-    } catch (e) {
-      if (e instanceof ScreenshotRequestError) throw new HttpError(400, (e as Error).message);
-      throw new HttpError(502, `screenshot failed: ${(e as Error).message}`);
+    if (view.kind === 'widget' && typeof view.widget === 'string' && view.widget && !s.widgets.exists(view.widget)) {
+      throw new HttpError(404, `unknown widget '${view.widget}' (available: ${s.widgets.ids().join(', ') || 'none'})`);
     }
+    const request = { ...b, view } as ScreenshotRequest;
+    let png: Buffer;
+    try {
+      png = await (await s.mirror()).screenshot(request);
+    } catch (e) {
+      // Request problems (incl. page-side: bad background, unknown widget) → 400; timeouts 504; busy 503; crashes 502.
+      return mirrorHttpError(e, 'screenshot failed');
+    }
+    return reply(png, 'image/png', 200, { 'Cache-Control': 'no-store' });
   });
 
   // ---------------------------------------------------------------- gestures
   r.get('/api/gestures', () => {
     const d = s.gestures.current;
-    return { poses: d.poses, interactions: d.interactions, ...(Object.keys(d.errors).length ? { errors: d.errors } : {}) };
+    return {
+      poses: d.poses, interactions: d.interactions,
+      ...(Object.keys(d.errors).length ? { errors: d.errors } : {}),
+      ...(Object.keys(d.warnings).length ? { warnings: d.warnings } : {}),
+    };
   });
   r.post('/api/gestures/record', async ({ req }) => {
     const b = await readJsonObject(req);

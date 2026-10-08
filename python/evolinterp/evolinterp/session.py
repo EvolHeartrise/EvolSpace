@@ -173,11 +173,12 @@ class InterpSession:
     def meta(self, view: SampleView, interventions: Interventions | None = None) -> dict[str, Any]:
         a = self.adapter
         iv = interventions or Interventions()
-        return meta_payload(model=a.model_name, checkpoint=a.checkpoint, layers=a.layer_labels, view=view,
-                            d_model=a.d_model, n_heads=a.n_heads, lens_kind=a.lens_kind,
-                            lens_description=a.lens_description,
+        return meta_payload(model=a.model_name, short_name=a.short_name or a.model_name, checkpoint=a.checkpoint,
+                            layers=a.layer_labels, view=view, d_model=a.d_model, n_heads=a.n_heads,
+                            lens_kind=a.lens_kind, lens_description=a.lens_description,
                             interventions=iv.describe([t["label"] for t in view.tokens]),
-                            probes=self.probes.names if self.probes else [])
+                            probes=self.probes.names if self.probes else [],
+                            proj=self.cache.projector.describe())
 
     def payload(self, prefix: str, i: int, layer: int, token: int, interventions: Interventions | None = None, *,
                 sample: bool = True, lens: bool = True) -> dict[str, Any]:

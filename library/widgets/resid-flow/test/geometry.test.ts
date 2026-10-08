@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { makeTensor } from '@evolspace/protocol';
 import { InterpData, displayToken, formatValue, toF32 } from '../data.ts';
 import { buildArcs, buildLayout, buildTicks, buildTrajectories, layerY, rayLayer, rayStack, resolvePoint, type LayoutOptions } from '../layout.ts';
-import { computeNodeColors, isProbability, type ColorSpec } from '../colors.ts';
+import { computeNodeColors, NA_GRAY, type ColorSpec } from '../colors.ts';
 import { generateSample } from '../demo-data.ts';
 
 const OPTS: LayoutOptions = { width: 0.6, spacing: 0.08, normalize: 'global', depthJitter: 0 };
@@ -235,18 +235,28 @@ describe('stack picking (rayStack)', () => {
 });
 
 describe('probe colors', () => {
-  it('treats [0,1] scores with -1 sentinels as probabilities (n/a = gray, 0.5 = neutral)', () => {
-    const d = grid(2, 3);
-    const p = new Float32Array([-1, 0.5, 1, 0, 0.5, -1]);
-    d.set('probe', makeTensor('f32', [2, 3], p));
-    expect(isProbability(d.probe!.data)).toBe(true);
+  it('uses a fixed [-1, 1] diverging scale; NaN (n/a) is neutral gray; beyond ±1 saturates', () => {
+    const d = grid(2, 4);
+    const p = new Float32Array([NaN, 0, 1, -1, 0.5, -0.5, 3, -7]);
+    d.set('probe', makeTensor('f32', [2, 4], p));
     const L = buildLayout(d, OPTS)!;
     const c = computeNodeColors(d, L, 'probe', SPEC);
-    expect(Array.from(c.subarray(0, 3))).toEqual([0.35, 0.35, 0.35].map((v) => Math.fround(v))); // n/a
-    expect(Array.from(c.subarray(3, 6))).toEqual([0.5, 0.5, 0.5]); // neutral
-    expect(Array.from(c.subarray(6, 9))).toEqual([1, 0, 0]); // p = 1 → high end
-    expect(Array.from(c.subarray(9, 12))).toEqual([0, 0, 1]); // p = 0 → low end
-    // Signed scores keep the symmetric scaling.
-    expect(isProbability(new Float32Array([-2, 0.5, 3]))).toBe(false);
+    const rgb = (k: number) => Array.from(c.subarray(k * 3, k * 3 + 3));
+    expect(rgb(0)).toEqual([NA_GRAY, NA_GRAY, NA_GRAY].map((v) => Math.fround(v))); // n/a
+    expect(rgb(1)).toEqual([0.5, 0.5, 0.5]); // 0 = undecided → neutral
+    expect(rgb(2)).toEqual([1, 0, 0]); // +1 → high end
+    expect(rgb(3)).toEqual([0, 0, 1]); // −1 → low end (a real score now, not a sentinel)
+    expect(rgb(4)).toEqual([0.75, 0.25, 0.25]); // not rescaled by the data's extent
+    expect(rgb(5)).toEqual([0.25, 0.25, 0.75]);
+    expect(rgb(6)).toEqual([1, 0, 0]); // saturates
+    expect(rgb(7)).toEqual([0, 0, 1]);
+  });
+
+  it('a probe with only small scores stays pale (fixed scale, no percentile stretch)', () => {
+    const d = grid(2, 3);
+    d.set('probe', makeTensor('f32', [2, 3], new Float32Array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])));
+    const L = buildLayout(d, OPTS)!;
+    const c = computeNodeColors(d, L, 'probe', SPEC);
+    expect(c[0]).toBeCloseTo(0.55, 5);
   });
 });

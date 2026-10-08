@@ -154,3 +154,71 @@ def test_publish_order_puts_indexes_last(toy_session) -> None:
     first_index = min(i for i, n in enumerate(names) if n.endswith(".index"))
     assert all(n.endswith(".index") for n in names[first_index:])
     assert names.index("tp.probe.color") < names.index("tp.probe.index")
+
+
+def test_meta_names_and_projection_info(toy_session) -> None:
+    s, a = toy_session, toy_session.adapter
+    meta = s.payload("tp", 2, 1, 0)[ch("tp", "meta")]
+    assert meta["model"] == a.model_name and meta["short_name"] == a.short_name == "toy red-majority · 3L d64"
+    assert meta["checkpoint"] == a.checkpoint and meta["checkpoint"].endswith(".pt")
+    assert meta["checkpoint"] not in meta["model"] and "/" not in meta["model"] and "\\" not in meta["model"]
+    pj = meta["proj"]
+    assert pj["normalized"] is True and pj["basis"] == "pca" and len(pj["explained_variance"]) == 3
+    ev = pj["explained_variance"]
+    assert all(0 < x < 1 for x in ev) and ev[0] >= ev[1] >= ev[2] and sum(ev) <= 1 + 1e-6
+    # the validator catches a path leaking into meta.model and a malformed meta.proj
+    bad = {ch("tp", "meta"): {**meta, "model": f"toy {meta['checkpoint']}", "proj": {"normalized": True}}}
+    probs = validate(bad, "tp", L=a.n_layers, T=a.n_tokens, H=a.n_heads)
+    assert any("checkpoint path" in p for p in probs) and any("meta.proj" in p for p in probs)
+
+
+def test_projection_is_scale_invariant_per_vector(toy_session) -> None:
+    """P.resid.proj projects RMS-normalized residuals: a vector's magnitude does not move it
+    (P.resid.norm carries magnitudes), so low-norm early layers are not collapsed to the centre."""
+    from evolinterp.capture import normalize_rows
+
+    pr = toy_session.cache.projector
+    assert pr.normalized
+    r = toy_session.capture(4).resid[0]                       # [L+1, T, d]
+    np.testing.assert_allclose(pr.project(r * 7.5), pr.project(r), atol=1e-4)
+    n = normalize_rows(r)
+    rms = np.sqrt(np.mean(n.astype(np.float64) ** 2, -1))
+    m = np.linalg.norm(r, axis=-1) > 0
+    np.testing.assert_allclose(rms[m], 1.0, atol=1e-4)
+    assert np.all(normalize_rows(np.zeros((2, 5), np.float32)) == 0)   # zero vectors stay zero (no NaN)
+    # norms still carry the magnitudes
+    v = toy_session.view(4)
+    np.testing.assert_allclose(v.norm, np.linalg.norm(r, axis=-1) * v.mask, rtol=1e-5, atol=1e-4)
+    # interventions use the same normalized projection
+    iv = Interventions.parse([{"op": "mlp", "layer": 0, "scale": 3.0}])
+    vi = toy_session.view(4, iv)
+    np.testing.assert_allclose(vi.proj, pr.project(toy_session.capture(4, iv).resid[0]) * vi.mask[..., None], atol=1e-5)
+
+
+def test_stale_capture_cache_is_recaptured(toy, tmp_path, monkeypatch) -> None:
+    """v1 caches (raw-residual projection) are ignored and replaced, never reused."""
+    from evolinterp import capture as cap_mod
+
+    monkeypatch.setenv("EVOL_INTERP_DATA", str(tmp_path))
+    path = cap_mod.model_dir(toy) / "capture.npz"
+    fresh, _ = cap_mod.load_or_capture(toy, log=None)
+    assert cap_mod.DatasetCache.load(path, toy.model_id) is not None
+    # rewrite it as a version-1 file
+    with np.load(path, allow_pickle=False) as z:
+        d = {k: z[k] for k in z.files if k != "pca_normalized"}
+    d["version"] = np.array(1)
+    d["proj"] = np.full_like(d["proj"], 9.0)
+    np.savez_compressed(path, **d)
+    assert cap_mod.DatasetCache.load(path, toy.model_id) is None
+    msgs: list[str] = []
+    again, _ = cap_mod.load_or_capture(toy, log=msgs.append)
+    assert not any("loaded" in m for m in msgs)
+    np.testing.assert_allclose(again.proj, fresh.proj, atol=1e-5)
+    with np.load(path, allow_pickle=False) as z:
+        assert int(z["version"]) == cap_mod.CACHE_VERSION and bool(z["pca_normalized"])
+    # same version but a different projection mode is also rejected
+    with np.load(path, allow_pickle=False) as z:
+        d = {k: z[k] for k in z.files}
+    d["pca_normalized"] = np.array(False)
+    np.savez_compressed(path, **d)
+    assert cap_mod.DatasetCache.load(path, toy.model_id) is None

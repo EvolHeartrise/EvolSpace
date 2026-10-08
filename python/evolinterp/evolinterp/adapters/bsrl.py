@@ -111,6 +111,22 @@ def _frac(f: float) -> str:
     return ("+" if f > 0 else "-") + mag
 
 
+def bsrl_names(*, run: str | None, update: Any, role: str | None = None, branched_from: Any = None,
+               n_layers: int, d_model: int, n_heads: int, branch: str = BSRL_BRANCH) -> tuple[str, str]:
+    """(model, short_name) for P.meta — readable, never a filesystem path (that is meta.checkpoint).
+
+    model: "BeatSaberRL NotePolicy · bend7_cd1000 · upd 7000 (leaf from upd 6000) · 9L d256 h8"
+    short: "BSRL bend7 · upd 7000"  (variant = run-name prefix before "_", else the code branch)"""
+    run = (run or "").strip()
+    variant = run.split("_")[0] if run else branch.rsplit("/", 1)[-1]
+    upd = f"upd {update}" if update is not None else ""
+    origin = f"{role} from upd {branched_from}" if role and branched_from is not None else (role or "")
+    step = " ".join(x for x in (upd, f"({origin})" if origin else "") if x)
+    parts = ["BeatSaberRL NotePolicy", run, step, f"{n_layers}L d{d_model} h{n_heads}"]
+    short = " · ".join(x for x in (f"BSRL {variant}", upd) if x)
+    return " · ".join(p for p in parts if p), short
+
+
 class BsrlAdapter(Adapter):
     kind = "bsrl"
     lens_kind = "logit-lens"
@@ -124,6 +140,11 @@ class BsrlAdapter(Adapter):
         ck = torch.load(ckpt, map_location="cpu", weights_only=True)
         self.arch = dict(ck.get("arch", {}))
         self.update = ck.get("update")
+        run_args = ck.get("args") if isinstance(ck.get("args"), dict) else {}
+        run_dir = run_args.get("run_dir")
+        self.run_name = Path(str(run_dir)).name if run_dir else ckpt.parent.name
+        self.role = ck.get("wsd_role") if isinstance(ck.get("wsd_role"), str) else None
+        self.branched_from = ck.get("branched_from_update")
         self.policy = P.load_policy(ck).eval().float()
         if dataset is not None:
             obs = np.load(dataset).astype(np.float32)
@@ -149,9 +170,9 @@ class BsrlAdapter(Adapter):
         st = ckpt.stat()
         h = hashlib.sha1(f"{ckpt.resolve()}|{st.st_size}|{st.st_mtime_ns}|{self.dataset_name}|{len(obs)}".encode()).hexdigest()[:8]
         self.model_id = f"bsrl-{ckpt.stem}-{h}"
-        upd = f" upd {self.update}" if self.update is not None else ""
-        self.model_name = (f"BeatSaberRL NotePolicy {ckpt.parent.name}/{ckpt.stem}{upd} "
-                           f"({self.n_layers}L d{self.d_model} h{self.n_heads})")
+        self.model_name, self.short_name = bsrl_names(
+            run=self.run_name, update=self.update, role=self.role, branched_from=self.branched_from,
+            n_layers=self.n_layers, d_model=self.d_model, n_heads=self.n_heads)
         self.lens_description = (
             "residual of the 5 lead tokens at the selected layer -> SimBa trunk -> 29 action heads "
             "(exact at the last layer); lead token selects its limb's joints, entity tokens show probes + attention")

@@ -6,6 +6,9 @@
 //   inverse ops for undo.
 // - Undo history groups batches that share a `group` id (one grab gesture), or
 //   that come from the same interactive source within a short time window.
+//   Batches that change nothing are not recorded. Undo is exact: prop keys an
+//   edit created are deleted again (internal UNSET_PROPS), which clients learn
+//   through onResync (a snapshot), since a patch can't delete keys.
 // - The store is synchronous and side-effect free apart from the onPatch /
 //   onChange callbacks (broadcast + persistence are wired in app.ts).
 import type { Entity, EntityPatch, Link, SceneOp, SceneState, WidgetManifest, Transform, OpSource } from '@evolspace/protocol';
@@ -59,6 +62,12 @@ export interface SceneStoreOptions {
   onPatch?: (version: number, ops: SceneOp[], source: string) => void;
   /** Called after a wholesale replacement (load/new). */
   onReset?: (scene: SceneState) => void;
+  /**
+   * Called after a change that a `scene.patch` can't express exactly (undo/redo
+   * deleting prop keys) or that isn't an op at all (save-as renaming the
+   * workspace): clients should be re-sent the full scene (they diff snapshots).
+   */
+  onResync?: (scene: SceneState) => void;
   /** Called after any change (persistence hook). */
   onChange?: () => void;
   historyLimit?: number;
@@ -74,12 +83,24 @@ interface OpOutcome {
   normalized: SceneOp;
   inverse: SceneOp[];
   addedId?: string;
+  /** The op left the scene exactly as it was (e.g. an update to the current values). */
+  noop?: boolean;
 }
 
 interface Ctx {
+  /** Internal ops (undo/redo/rollback): skip catalog checks and default filling; allow UNSET_PROPS. */
   trusted: boolean;
   warnings: string[];
+  /** Set when an op deleted prop keys (not expressible in a client patch → resync). */
+  resync?: boolean;
 }
+
+/**
+ * Internal-only patch field used by inverse ops: prop keys to delete. Props
+ * that did not exist before an update are deleted on undo (not set to a
+ * default/null). Rejected in untrusted (client/agent) batches and never broadcast.
+ */
+const UNSET_PROPS = '$unsetProps';
 
 const clone = <T>(v: T): T => structuredClone(v);
 
@@ -118,7 +139,11 @@ export class SceneStore {
   }
 
   /** Rename the current workspace (save-as) without touching content. */
-  setWorkspaceName(name: string): void { this.state.workspace = name; }
+  setWorkspaceName(name: string): void {
+    if (name === this.state.workspace) return;
+    this.state.workspace = name;
+    this.opts.onResync?.(this.state); // clients' SceneState.workspace must not go stale
+  }
 
   apply(ops: SceneOp[], options: ApplyOptions): ApplyResult {
     if (!Array.isArray(ops)) throw new SceneError(`ops must be an array of SceneOp, got ${describe(ops)}`);
@@ -126,7 +151,10 @@ export class SceneStore {
     const { outcomes, warnings } = this.applyBatch(ops, { trusted: false, warnings: [] });
     const normalized = outcomes.map((o) => o.normalized);
     const inverse = outcomes.slice().reverse().flatMap((o) => o.inverse);
-    if (options.record !== false) this.record({ forward: normalized, inverse, source: options.source, group: options.group, ts: this.opts.now() });
+    // A batch that changed nothing (e.g. re-setting current values) is not an undo step
+    // (and must not clear the redo stack).
+    const changed = outcomes.some((o) => !o.noop);
+    if (options.record !== false && changed) this.record({ forward: normalized, inverse, source: options.source, group: options.group, ts: this.opts.now() });
     this.commit(normalized, options.source);
     return {
       version: this.state.version,
@@ -146,9 +174,10 @@ export class SceneStore {
     const entry = this.undoStack.pop();
     if (!entry) return { version: this.state.version, ok: false };
     try {
-      const { outcomes } = this.applyBatch(entry.inverse, { trusted: true, warnings: [] });
+      const ctx: Ctx = { trusted: true, warnings: [] };
+      const { outcomes } = this.applyBatch(entry.inverse, ctx);
       this.redoStack.push(entry);
-      this.commit(outcomes.map((o) => o.normalized), 'undo');
+      this.commit(outcomes.map((o) => o.normalized), 'undo', ctx.resync);
       return { version: this.state.version, ok: true };
     } catch (e) {
       return this.historyBroken('undo', e);
@@ -159,9 +188,10 @@ export class SceneStore {
     const entry = this.redoStack.pop();
     if (!entry) return { version: this.state.version, ok: false };
     try {
-      const { outcomes } = this.applyBatch(entry.forward, { trusted: true, warnings: [] });
+      const ctx: Ctx = { trusted: true, warnings: [] };
+      const { outcomes } = this.applyBatch(entry.forward, ctx);
       this.undoStack.push({ ...entry, ts: 0 }); // ts 0: never merge new edits into a redone step
-      this.commit(outcomes.map((o) => o.normalized), 'redo');
+      this.commit(outcomes.map((o) => o.normalized), 'redo', ctx.resync);
       return { version: this.state.version, ok: true };
     } catch (e) {
       return this.historyBroken('redo', e);
@@ -185,9 +215,10 @@ export class SceneStore {
 
   // ------------------------------------------------------------------ internals
 
-  private commit(ops: SceneOp[], source: string): void {
+  private commit(ops: SceneOp[], source: string, resync = false): void {
     this.state.version++;
     this.opts.onPatch?.(this.state.version, ops, source);
+    if (resync) this.opts.onResync?.(this.state);
     this.opts.onChange?.();
   }
 
@@ -307,6 +338,8 @@ export class SceneStore {
     const prev: Record<string, unknown> = {};
     const norm: Record<string, unknown> = {};
     const next: Entity = { ...e, props: { ...e.props }, transform: e.transform };
+    /** Prop keys this update creates: the inverse deletes them (exact undo). */
+    const created = new Set<string>();
 
     for (const [key, value] of Object.entries(patch)) {
       switch (key) {
@@ -316,11 +349,15 @@ export class SceneStore {
             prev.widget = e.widget;
             next.widget = w;
             norm.widget = w;
-            // Fill defaults for the new widget's props that aren't set yet.
-            const defs = propDefaults(this.opts.catalog.manifest(w));
-            const added: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(defs)) if (!(k in next.props)) { next.props[k] = v; added[k] = v; }
-            if (Object.keys(added).length) norm.props = { ...(norm.props as object | undefined), ...added };
+            // Fill defaults for the new widget's props that aren't set yet. Not for
+            // internal ops: redo carries the filled defaults explicitly, and undo
+            // must restore the previous props exactly.
+            if (!ctx.trusted) {
+              const defs = propDefaults(this.opts.catalog.manifest(w));
+              const added: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(defs)) if (!(k in next.props)) { next.props[k] = v; added[k] = v; created.add(k); }
+              if (Object.keys(added).length) norm.props = { ...(norm.props as object | undefined), ...added };
+            }
           }
           break;
         }
@@ -337,6 +374,9 @@ export class SceneStore {
         }
         case 'props':
           break; // handled after widget so defaults/validation use the final widget
+        case UNSET_PROPS:
+          if (!ctx.trusted) throw new SceneError(`patch has unknown field '${key}' (allowed: props, transform, parent, name, visible, anchor, tags, interactions, locked, widget)`);
+          break; // handled after props
         case 'transform': {
           const t = checkPartialTransform(value, 'patch.transform');
           prev.transform = clone(e.transform);
@@ -371,24 +411,51 @@ export class SceneStore {
       }
     }
 
+    const prevProps: Record<string, unknown> = {};
     if (patch.props !== undefined) {
       if (!isObj(patch.props)) throw new SceneError(`patch.props must be an object, got ${describe(patch.props)}`);
       this.checkProps(next.widget, patch.props, ctx, id);
-      const prevProps: Record<string, unknown> = {};
-      const defs = propDefaults(this.opts.catalog.manifest(e.widget));
       for (const [k, v] of Object.entries(patch.props)) {
-        // Absent before → restore the default (or null) on undo; JSON can't carry "delete key".
-        prevProps[k] = k in e.props ? clone(e.props[k]) : (defs[k] ?? null);
+        // Absent before → the inverse deletes the key (exact undo, not a default/null).
+        if (k in e.props) prevProps[k] = clone(e.props[k]);
+        else created.add(k);
         next.props[k] = clone(v);
       }
-      prev.props = { ...(prev.props as object | undefined), ...prevProps };
       norm.props = { ...(norm.props as object | undefined), ...clone(patch.props) };
     }
+
+    // Internal (inverse) deletion of prop keys. A scene.patch can't express "delete
+    // key", so the store asks for a client resync (snapshot) after the batch.
+    const unset = (patch as Record<string, unknown>)[UNSET_PROPS];
+    const deleted: Record<string, unknown> = {};
+    if (ctx.trusted && Array.isArray(unset)) {
+      for (const k of unset) {
+        if (typeof k !== 'string' || !(k in next.props)) continue;
+        if (k in e.props) deleted[k] = clone(e.props[k]);
+        delete next.props[k];
+        if (norm.props) delete (norm.props as Record<string, unknown>)[k];
+        created.delete(k);
+        ctx.resync = true;
+      }
+      if (norm.props && Object.keys(norm.props).length === 0) delete norm.props;
+    }
+
+    Object.assign(prevProps, deleted); // inverse of a deletion restores the value (rollback of an undo)
+    if (Object.keys(prevProps).length) prev.props = prevProps;
+    if (created.size) prev[UNSET_PROPS] = [...created];
+
+    // Compare only what the patch touched (props may hold large arrays).
+    const touchedProps = isObj(patch.props) ? Object.keys(patch.props) : [];
+    const noop = created.size === 0 && Object.keys(deleted).length === 0
+      && Object.keys(patch).every((k) => k === 'props' || k === UNSET_PROPS
+        || sameJson((e as unknown as Record<string, unknown>)[k], (next as unknown as Record<string, unknown>)[k]))
+      && touchedProps.every((k) => sameJson(e.props[k], next.props[k]));
 
     this.state.entities[id] = next;
     return {
       normalized: { op: 'update', id, patch: norm as EntityPatch },
       inverse: [{ op: 'update', id, patch: prev as EntityPatch }],
+      noop,
     };
   }
 
@@ -476,6 +543,7 @@ export class SceneStore {
     return {
       normalized: { op: 'link.update', id, patch: norm as Partial<Omit<Link, 'id'>> },
       inverse: [{ op: 'link.update', id, patch: prev as Partial<Omit<Link, 'id'>> }],
+      noop: sameJson(l, next),
     };
   }
 
@@ -487,6 +555,7 @@ export class SceneStore {
   }
 
   private opClear(): OpOutcome {
+    const noop = Object.keys(this.state.entities).length === 0 && Object.keys(this.state.links).length === 0;
     const order: string[] = [];
     const children = this.childIndex();
     const walk = (id: string) => { order.push(id); for (const c of children.get(id) ?? []) walk(c); };
@@ -497,7 +566,7 @@ export class SceneStore {
     ];
     this.state.entities = {};
     this.state.links = {};
-    return { normalized: { op: 'clear' }, inverse };
+    return { normalized: { op: 'clear' }, inverse, noop };
   }
 
   private childIndex(): Map<string, string[]> {
@@ -517,6 +586,22 @@ const ENTITY_KEYS = new Set(['id', 'parent', 'name', 'widget', 'props', 'transfo
 function setOpt<K extends 'name' | 'anchor' | 'tags' | 'interactions' | 'locked'>(e: Entity, key: K, value: unknown): void {
   if (value === null || value === undefined) delete e[key];
   else (e as unknown as Record<string, unknown>)[key] = value;
+}
+
+/** Structural equality of JSON-like values (key order insensitive; undefined-valued keys count as absent). */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return Number.isNaN(a) && Number.isNaN(b);
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const bb = b as unknown[];
+    return a.length === bb.length && a.every((x, i) => sameJson(x, bb[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao).filter((k) => ao[k] !== undefined);
+  const bk = Object.keys(bo).filter((k) => bo[k] !== undefined);
+  return ak.length === bk.length && ak.every((k) => bo[k] !== undefined && sameJson(ao[k], bo[k]));
 }
 
 function touches(l: Link, ids: Set<string>): boolean {

@@ -94,3 +94,30 @@ def test_session_payload(bsrl) -> None:
     assert validate(p, "ib", L=10, T=29, H=4) == []
     assert p[ch("ib", "resid.mask")][10, 5:].sum() == 0
     assert "b2h0 off" in p[ch("ib", "meta")]["interventions"]
+
+
+def test_names_never_carry_the_path() -> None:
+    from evolinterp.adapters.bsrl import bsrl_names
+
+    model, short = bsrl_names(run="bend7_cd1000", update=7000, role="leaf", branched_from=6000,
+                              n_layers=10, d_model=192, n_heads=4)
+    assert short == "BSRL bend7 · upd 7000"
+    assert model == "BeatSaberRL NotePolicy · bend7_cd1000 · upd 7000 (leaf from upd 6000) · 10L d192 h4"
+    model, short = bsrl_names(run=None, update=None, n_layers=2, d_model=8, n_heads=1, branch="exp/foo")
+    assert short == "BSRL foo" and model == "BeatSaberRL NotePolicy · 2L d8 h1"
+
+
+def test_meta_names_and_normalized_projection(bsrl) -> None:
+    from evolinterp.session import InterpSession
+
+    assert bsrl.short_name == f"BSRL bend7 · upd {bsrl.update}"
+    s = InterpSession.open(bsrl, probes="off", log=None)
+    meta = s.payload("ib", 3, 4, 0)[ch("ib", "meta")]
+    assert meta["short_name"] == bsrl.short_name and meta["checkpoint"] == bsrl.checkpoint
+    assert "/" not in meta["model"] and "\\" not in meta["model"] and "leaf_from" not in meta["model"]
+    assert meta["proj"]["normalized"] is True and len(meta["proj"]["explained_variance"]) == 3
+    # early layers are no longer collapsed onto the centre (raw norms grow ~7x through depth)
+    m = s.cache.mask.astype(bool)
+    r = np.linalg.norm(s.cache.proj, axis=-1)
+    mean_r = [r[:, li][m[:, li]].mean() for li in range(bsrl.n_layers + 1)]
+    assert min(mean_r) > 0.25 * max(mean_r), mean_r

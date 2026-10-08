@@ -4,7 +4,7 @@ import type { Router } from '../http/router.ts';
 import { HttpError, reply, type Reply } from '../http/router.ts';
 import { readJsonBody } from '../http/body.ts';
 import type { Services } from '../services.ts';
-import { ScreenshotRequestError } from '../mirror/index.ts';
+import { mirrorHttpError } from './mirror-errors.ts';
 
 export function widgetRoutes(r: Router, s: Services): void {
   r.get('/api/widgets', () => s.widgets.list());
@@ -29,8 +29,7 @@ export function widgetRoutes(r: Router, s: Services): void {
     try {
       png = await (await s.mirror()).thumbnail(params.id, body.props);
     } catch (e) {
-      if (e instanceof ScreenshotRequestError) throw new HttpError(400, (e as Error).message);
-      throw new HttpError(502, `thumbnail failed: ${(e as Error).message}`);
+      return mirrorHttpError(e, 'thumbnail failed');
     }
     s.widgets.refreshThumbnail(params.id);
     return reply(png, 'image/png', 200, { 'Cache-Control': 'no-store' });

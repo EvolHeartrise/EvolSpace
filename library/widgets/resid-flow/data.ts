@@ -15,6 +15,8 @@ export interface InterpToken {
 
 export interface InterpMeta {
   model?: string;
+  /** Short display name (preferred over `model` for the header). */
+  short_name?: string;
   checkpoint?: string;
   /** L+1 labels: "embed", "b0".."b{L-1}". */
   layers?: string[];
@@ -23,12 +25,15 @@ export interface InterpMeta {
   d_model?: number;
   sample?: { index: number; total: number; label?: string };
   lens?: { kind: string; description?: string };
+  /** How P.resid.proj was made; `normalized`: residuals were scaled to unit norm before projecting. */
+  proj?: { normalized?: boolean };
 }
 
 export interface LensReadout {
   layer: number;
   token: number;
   title: string;
+  /** `value` is NaN where the producer sent null / a non-number (shown as '—'). */
   items: Array<{ label: string; value: number }>;
 }
 
@@ -134,6 +139,7 @@ function asMeta(v: unknown): InterpMeta | null {
   const m = v as Record<string, unknown>;
   const out: InterpMeta = {};
   if (typeof m.model === 'string') out.model = m.model;
+  if (typeof m.short_name === 'string' && m.short_name.trim()) out.short_name = m.short_name.trim();
   if (typeof m.checkpoint === 'string') out.checkpoint = m.checkpoint;
   if (Array.isArray(m.layers)) out.layers = m.layers.map((x) => String(x));
   if (Array.isArray(m.tokens)) {
@@ -156,19 +162,25 @@ function asMeta(v: unknown): InterpMeta | null {
     out.lens = { kind: String(l.kind ?? '') };
     if (l.description !== undefined) out.lens.description = String(l.description);
   }
+  if (m.proj && typeof m.proj === 'object' && !Array.isArray(m.proj)) {
+    const pr = m.proj as Record<string, unknown>;
+    out.proj = { normalized: pr.normalized === true };
+  }
   return out;
 }
 
 function asReadout(v: unknown): LensReadout | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   const r = v as Record<string, unknown>;
+  // null / missing / non-numeric values stay as rows (NaN → '—'): the producer listed them on purpose.
   const items = Array.isArray(r.items)
     ? r.items
+        .filter((it) => it !== null && typeof it === 'object')
         .map((it) => {
-          const o = (it ?? {}) as Record<string, unknown>;
-          return { label: String(o.label ?? ''), value: Number(o.value) };
+          const o = it as Record<string, unknown>;
+          const v = typeof o.value === 'number' ? o.value : typeof o.value === 'string' && o.value.trim() !== '' ? Number(o.value) : NaN;
+          return { label: String(o.label ?? ''), value: Number.isFinite(v) ? v : NaN };
         })
-        .filter((it) => Number.isFinite(it.value))
     : [];
   return {
     layer: Number.isFinite(Number(r.layer)) ? Number(r.layer) : -1,
@@ -389,10 +401,29 @@ export function displayToken(s: string, max = 16): string {
   return out.length > max ? out.slice(0, max - 1) + '…' : out;
 }
 
-/** Compact number formatting for readouts and status lines. */
+/**
+ * Shorten `s` to at most `max` characters, cutting at a word boundary (space,
+ * path separator, '·', '_', '-', '(') when one is reasonably close, with an ellipsis.
+ */
+export function fitText(s: string, max: number): string {
+  const str = s.replace(/\s+/g, ' ').trim();
+  if (max < 2) return str.slice(0, Math.max(0, max));
+  if (str.length <= max) return str;
+  const hard = str.slice(0, max - 1);
+  let cut = -1;
+  for (let i = hard.length; i >= Math.floor(max * 0.55); i--) {
+    const c = str[i];
+    if (c === ' ' || c === '/' || c === '\\' || c === '·' || c === '_' || c === '-' || c === '(' || c === ',') { cut = i; break; }
+  }
+  const head = (cut > 0 ? str.slice(0, cut) : hard).replace(/[\s·/\\_\-(,]+$/, '');
+  return (head || hard) + '…';
+}
+
+/** Compact number formatting for readouts and status lines; non-finite (n/a) → '—'. */
 export function formatValue(v: number): string {
-  if (!Number.isFinite(v)) return String(v);
+  if (!Number.isFinite(v)) return '—';
   const a = Math.abs(v);
+  if (a < 1e-9) return '0';
   if (a >= 1000) return v.toExponential(1);
   if (a >= 100) return v.toFixed(0);
   if (a >= 10) return v.toFixed(1);

@@ -187,7 +187,11 @@ export function generateSample(index: number, opts: DemoOptions = { layers: 10, 
       const growth = 1 + 0.35 * l;
       const n3 = Math.hypot(x[t * 3], x[t * 3 + 1], x[t * 3 + 2]);
       norm[i] = on ? (4 + 6 * n3) * growth * (tokens[t].group === G.bos ? 6 : 1) : 0;
-      probe[i] = on ? (tokens[t].group === G.loc ? 1 : -0.4) * Math.tanh((l / L) * 3 - 0.6) + gauss(r) * 0.08 : 0;
+      // Probe contract (python/evolinterp): 2·P(true class) − 1 in [-1, 1], NaN = not applicable
+      // (padding, and here the BOS token). Confidence grows with depth, faster for locations.
+      const applies = on && tokens[t].group !== G.bos;
+      const conf = Math.tanh((l / L) * 3 - 0.6) * (tokens[t].group === G.loc ? 1 : 0.7) + gauss(r) * 0.08;
+      probe[i] = applies ? Math.max(-1, Math.min(1, conf)) : NaN;
     }
   };
   write(0);

@@ -60,6 +60,32 @@ def test_interp_toy_source_end_to_end(interp_data) -> None:
             _until(lambda: c.get("interp.lens.readout")["layer"] == 0, 20, "lens layer 0")
             _until(lambda: c.get("interp.probe.index", default=[]), 120, "probes trained")
             assert c.get("interp.probe.color").shape == (L + 1, T)
+            st = c.get("interp.status")
+            assert st["owner"]["source"] == "interp-toy" and m["short_name"].startswith("toy")
+            toy_pid = st["owner"]["pid"]
+
+            # a second interp source on the same prefix refuses (before loading its model) and
+            # stops itself, so the supervisor does not restart it in a loop
+            c.source("interp-bsrl", "start")
+            def refused():
+                b = c.source("interp-bsrl")
+                return not b["running"] and b.get("lastExit") and b
+            b = _until(refused, 90, "interp-bsrl refusal")
+            log = "\n".join(b["logTail"])
+            assert "refusing to start source interp-bsrl" in log and "interp-toy" in log, log
+            time.sleep(2.0)
+            assert c.source("interp-bsrl")["running"] is False                     # not restarted
+            assert c.get("interp.status")["owner"]["pid"] == toy_pid               # owner untouched
+            assert c.get("interp.meta")["short_name"] == m["short_name"]
+
+            # restarting the owner itself: the killed process leaves a fresh-looking status,
+            # but its pid is dead, so the new process takes the prefix over
+            c.source("interp-toy", "restart")
+            def taken_over():
+                s = c.get("interp.status", default=None) or {}
+                return s.get("owner", {}).get("pid") not in (None, toy_pid) and s.get("state") in ("ready", "training-probes")
+            _until(taken_over, 120, "restarted interp-toy owning the prefix")
+            assert c.source("interp-toy")["running"] is True
         finally:
             c.source("interp-toy", "stop")
         assert c.source("interp-toy")["running"] is False

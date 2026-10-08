@@ -7,23 +7,31 @@
 
 import type { WidgetDefinition } from '@evolspace/protocol';
 import { ResidFlow, type ResidProps } from './controller.ts';
+import { NORMALIZE_MODES } from './layout.ts';
 
 const definition: WidgetDefinition<ResidProps> = {
   description:
     "Residual stream as a 3D flow: layers stacked along +Y, one smooth trajectory per token through its projected residual (P.resid.proj), " +
     "attn/MLP write ticks, a lens plane at the selected layer with the P.lens.readout panel and attention arcs. " +
     "Pinch a layer to move the lens, a node to select a token, drag the lens handle to scrub; publishes <prefix>.ctl.layer/token.",
-  version: '1.1.0',
+  version: '1.2.0',
   props: {
     prefix: { type: 'string', default: 'interp', description: "Channel prefix P of the interp data contract (P.meta, P.resid.proj, ...)." },
     width: { type: 'number', default: 0.6, min: 0.1, max: 3, step: 0.05, description: 'Edge length of each layer plane (m).' },
     height: { type: 'number', default: 0.8, min: 0.1, max: 4, step: 0.05, description: 'Total stack height (m) when layerSpacing is 0 (auto).' },
     layerSpacing: { type: 'number', default: 0, min: 0, max: 0.5, step: 0.005, description: 'Fixed distance between layer planes (m); 0 = height / L.' },
-    normalize: { type: 'enum', options: ['global', 'layer'], default: 'global', description: "Projection scaling: 'global' keeps one scale (shows growth), 'layer' fills each plane." },
+    normalize: {
+      type: 'enum',
+      options: [...NORMALIZE_MODES],
+      default: 'auto',
+      description:
+        "Projection scaling: 'global' = one scale (shows growth; near-identical layers collapse to a dot); 'per-layer' = every layer centered and filling its plane " +
+        "('layer' = old name); 'auto' = global, but layers spread over < 40% of the plane are magnified about their centroid (labelled ×gain).",
+    },
     depthJitter: { type: 'number', default: 0, min: 0, max: 0.5, step: 0.05, description: 'Use projection component 2 as a y offset of up to this fraction of the spacing.' },
     tokenFilter: { type: 'json', default: [], description: 'Token group names to show (array or comma-separated string); empty = all tokens.' },
     colorBy: { type: 'enum', options: ['group', 'position', 'norm', 'probe'], default: 'group', description: "Trajectory/node color: token group (palette), position, residual norm, or probe score (needs 'probe')." },
-    probe: { type: 'string', default: '', description: "Probe name for colorBy 'probe' (reads <prefix>.probe.<name>, [L+1, T])." },
+    probe: { type: 'string', default: '', description: "Probe name for colorBy 'probe' (reads <prefix>.probe.<name>, [L+1, T], scores in [-1, 1] on a fixed diverging scale; NaN = n/a, gray)." },
     showAttn: { type: 'boolean', default: true, description: 'Attention arcs from the selected token to the keys it attends, in the lens plane.' },
     showDelta: { type: 'boolean', default: true, description: 'Paired attn/MLP write-magnitude ticks beside nodes (P.resid.delta).' },
     showParticles: { type: 'boolean', default: true, description: 'Animated flow particles along trajectories and arcs.' },

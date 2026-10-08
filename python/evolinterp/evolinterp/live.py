@@ -10,6 +10,10 @@ P.lens.readout and P.sae.*.top. While playing, the process advances
 P.ctl.sample itself (published over its own WS connection, which the server
 never echoes back, so play cannot race with its own updates).
 
+One process per prefix: P.status carries an owner + heartbeat (lease.py); a second
+process on the same prefix refuses to start (stderr, exit code 3, and with --source it
+asks the supervisor to stop it).
+
 Startup: status -> P.status; activations for the whole dataset are cached on
 disk (data/interp/<model_id>/capture.npz) after the first run; probes are
 trained in a background thread when missing (--probes auto) and published when
@@ -34,6 +38,7 @@ from evolspace import Client, EvolError
 
 from .contract import CTL_CHANNELS, ch, json_safe, publish_order
 from .interventions import InterventionError, Interventions
+from .lease import EXIT_CONFLICT, PrefixLease, describe_owner, request_self_stop
 from .session import InterpSession
 
 MAX_PLAY_HZ = 30.0
@@ -44,10 +49,12 @@ def log(msg: str) -> None:
 
 
 class LiveInterp:
-    def __init__(self, session: InterpSession, client: Client, prefix: str = "interp", *, rate: float = 4.0):
+    def __init__(self, session: InterpSession, client: Client, prefix: str = "interp", *, rate: float = 4.0,
+                 lease: PrefixLease | None = None):
         self.s = session
         self.c = client
         self.prefix = prefix
+        self.lease = lease
         a = session.adapter
         self.L, self.T, self.N = a.n_layers, a.n_tokens, a.num_samples()
         self.default_rate = max(0.1, min(float(rate), MAX_PLAY_HZ))
@@ -63,6 +70,10 @@ class LiveInterp:
         self._stop = threading.Event()
         self._last_advance = 0.0
         self._status: dict[str, Any] = {"state": "ready", "message": ""}
+        # an error status is cleared by the next successful publish that follows a control change
+        # (not by a reconnect/heartbeat republish of the same state, which would hide the error)
+        self._ctl_gen = 0
+        self._err_gen = -1
         self.sub = None
         self.published = 0
 
@@ -143,6 +154,8 @@ class LiveInterp:
             log(f"[live] ignored {name}={value!r}: {e}")
             return
         if changed:
+            with self._lock:
+                self._ctl_gen += 1
             self._wake.set()
 
     def _set(self, name: str, value: Any) -> bool:
@@ -185,6 +198,7 @@ class LiveInterp:
 
     def _advance(self) -> None:
         with self._lock:
+            self._ctl_gen += 1
             self.sample = (self.sample + 1) % self.N
             self._dirty["sample"] = self._dirty["lens"] = True
             s = self.sample
@@ -199,16 +213,24 @@ class LiveInterp:
 
     # ------------------------------------------------------------------ publishing
 
-    def _set_status(self, state: str, message: str) -> None:
-        self._status = {"state": state, "message": message}
+    def _set_status(self, state: str, message: str, gen: int | None = None) -> None:
+        """gen: control generation the error belongs to (default: the current one)."""
+        with self._lock:
+            self._status = {"state": state, "message": message}
+            if state == "error":
+                self._err_gen = self._ctl_gen if gen is None else gen
         self._publish_status()
 
     def _publish_status(self) -> None:
         with self._lock:
-            st = {**self._status, "model": self.s.adapter.model_name, "model_id": self.s.adapter.model_id,
+            st = {**self._status, "model": self.s.adapter.model_name,
+                  "short_name": self.s.adapter.short_name or self.s.adapter.model_name, "model_id": self.s.adapter.model_id,
                   "sample": self.sample, "layer": self.layer, "token": self.token, "play": self.play_hz,
                   "interventions": self.iv.to_json(), "probes": self.s.probes.names if self.s.probes else [],
                   "saes": sorted(self.s.saes), "pid": os.getpid(), "ts": time.time()}
+        if self.lease is not None:
+            self.lease.publish(st)  # stamps owner + ts; re-sent by the lease heartbeat
+            return
         try:
             self.c.publish(ch(self.prefix, "status"), st)
         except EvolError as e:
@@ -223,6 +245,7 @@ class LiveInterp:
             for k in self._dirty:
                 self._dirty[k] = False
             i, layer, token, iv = self.sample, self.layer, self.token, self.iv
+            gen = self._ctl_gen
         try:
             t0 = time.perf_counter()
             payload: dict[str, Any] = {}
@@ -235,9 +258,9 @@ class LiveInterp:
                 self.c.publish(name, value if isinstance(value, np.ndarray) else json_safe(value))
             self.published += 1
             if dirty["sample"] or dirty["static"]:
-                st = self._status
-                if st.get("state") == "error":
-                    self._status = {"state": "ready", "message": ""}
+                with self._lock:
+                    if self._status.get("state") == "error" and gen > self._err_gen:
+                        self._status = {"state": "ready", "message": ""}
                 self._publish_status()
             if self.published <= 2 or (time.perf_counter() - t0) > 0.5:
                 log(f"[live] published {len(payload)} channels for sample {i} layer {layer} token {token} "
@@ -260,7 +283,7 @@ class LiveInterp:
             # Not retried: the same state would fail again (and a crash would make the supervisor
             # restart us into the same control values). The next control change tries again.
             traceback.print_exc()
-            self._set_status("error", f"computing sample {i} failed: {type(e).__name__}: {e}")
+            self._set_status("error", f"computing sample {i} failed: {type(e).__name__}: {e}", gen=gen)
             return False
 
 
@@ -312,7 +335,17 @@ def build_parser(p: argparse.ArgumentParser | None = None) -> argparse.ArgumentP
                    help="auto: load saved probes or train them in the background; load: only load; off")
     p.add_argument("--threads", type=int, default=int(os.environ.get("EVOL_INTERP_THREADS", "4")),
                    help="torch CPU threads (keep the PC responsive)")
+    p.add_argument("--source", default=os.environ.get("EVOL_SOURCE_ID") or None,
+                   help="supervised source id (library/sources/<id>); named in P.status.owner, and stopped via the "
+                        "server API when this process refuses to start because the prefix is taken")
     return p
+
+
+def _refuse(lease: PrefixLease, client: Client, other: dict[str, Any], source: str | None) -> int:
+    msg = lease.refusal_message(other)
+    print(time.strftime("%H:%M:%S"), f"[live] {msg}", file=sys.stderr, flush=True)
+    request_self_stop(client, source, log=log)  # supervised: no restart loop (the server kills us here)
+    return EXIT_CONFLICT
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -322,31 +355,58 @@ def main(argv: list[str] | None = None) -> int:
 
     torch.set_num_threads(max(1, args.threads))
     client = Client(args.url, producer=f"interp:{args.prefix}")
-    status_ch = ch(args.prefix, "status")
     if not client.is_up():
         log(f"[live] waiting for the EvolSpace server at {client.url} ...")
         client.wait_until_up()
 
+    # one live process per prefix (interp-bsrl and interp-toy share "interp"): see lease.py
+    lease = PrefixLease(client, args.prefix, source=args.source, model=args.model, log=log)
+    other = lease.conflict()
+    if other is not None:
+        return _refuse(lease, client, other, args.source)
+
     def status(state: str, message: str) -> None:
         log(f"[live] {state}: {message}")
-        try:
-            client.publish(status_ch, {"state": state, "message": message, "ts": time.time()})
-        except EvolError:
-            pass
+        lease.publish({"state": state, "message": message, "model": args.model})
 
+    status("loading", f"loading {args.model} model")          # claims the prefix
+    time.sleep(0.5)                                            # settle a simultaneous start
+    other = lease.conflict()
+    if other is not None and lease.beats_us(other):
+        return _refuse(lease, client, other, args.source)
+    live: LiveInterp | None = None
+
+    def on_lost(o: dict[str, Any]) -> None:
+        print(time.strftime("%H:%M:%S"), f"[live] yielding '{args.prefix}.*' to {describe_owner(o)}, which claimed it "
+              "first; exiting", file=sys.stderr, flush=True)
+        if live is not None:
+            live.stop()
+
+    def on_contest() -> None:
+        if live is not None:
+            live.mark_static_dirty()  # the other process may have overwritten our channels
+
+    lease.start_heartbeat(on_contest=on_contest, on_lost=on_lost)
     try:
-        status("loading", f"loading {args.model} model")
         from .adapters import make_adapter
 
         adapter = make_adapter(args.model, args.checkpoint, dataset=args.dataset, log=log)
-        status("loading", f"capturing activations for {adapter.num_samples()} samples (cached after the first run)")
-        session = InterpSession.open(adapter, probes="off" if args.probes == "off" else "load", log=log)
+        lease.set_model(adapter.short_name or adapter.model_name)
+        if lease.lost is None:
+            status("loading", f"capturing activations for {adapter.num_samples()} samples (cached after the first run)")
+            session = InterpSession.open(adapter, probes="off" if args.probes == "off" else "load", log=log)
     except Exception as e:  # noqa: BLE001 - report on the bus, then exit non-zero (supervisor backs off)
         status("error", f"{type(e).__name__}: {e}")
         traceback.print_exc()
+        lease.release(publish=False)  # keep the error on P.status; our dead pid frees the prefix
+        client.close()
         return 1
+    if lease.lost is not None:
+        request_self_stop(client, args.source, log=log)
+        client.close()
+        return EXIT_CONFLICT
 
-    live = LiveInterp(session, client, args.prefix, rate=args.rate)
+    live = LiveInterp(session, client, args.prefix, rate=args.rate, lease=lease)
     live.start()
     if session.probes is None and args.probes == "auto":
         def train() -> None:
@@ -368,7 +428,13 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         live.stop()
+        if lease.lost is None:
+            lease.release()
+    if lease.lost is not None:
+        request_self_stop(client, args.source, log=log)
         client.close()
+        return EXIT_CONFLICT
+    client.close()
     return 0
 
 

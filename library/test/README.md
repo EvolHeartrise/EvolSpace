@@ -15,8 +15,11 @@ npx vitest run library/test
 | `controls/display/charts/spatial/gauge.test.ts` | behaviour of each widget |
 | `shared.test.ts` | library/shared helpers |
 | `prefabs.test.ts` | prefab structure vs widget definitions + simulated link dataflow + layout |
+| `billboard-troika.test.ts` | billboarding chains the real troika `Text.prototype.onBeforeRender` (and restores it); text widget renders in every billboard mode; panel/number/slider labels are visible and in front of their card |
 | `hardening.test.ts` | regressions from the hardening review: every widget mounted on a channel that already holds a value, state props vs input links across `onProps`, drags across rebuilds, bounded instancing, in-place text/geometry updates |
 
 New widgets are picked up by `build.test.ts` and `smoke.test.ts` automatically
-(directories in `library/widgets/`, except other components' widgets listed in `NOT_OURS`).
+(every directory in `library/widgets/` with a `widget.ts`, resid-flow included; `NOT_OURS`
+can exclude a widget another component is building). `prefabs.test.ts` checks every prefab
+(resid-lens included); resid-flow's own tests live in `library/widgets/resid-flow/test`.
 Writing guide: `library/widgets/README.md`.

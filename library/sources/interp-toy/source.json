@@ -1,5 +1,5 @@
 {
-  "description": "Interp live source for the toy transformer testbed (python/evolinterp; trains in ~15 s on first start, cached in data/interp/toy): same interp.* contract as interp-bsrl. Stop interp-bsrl first (same prefix).",
+  "description": "Interp live source for the toy transformer testbed (python/evolinterp; trains in ~15 s on first start, cached in data/interp/toy): same interp.* contract as interp-bsrl. One interp process per prefix: if interp-bsrl already serves interp.*, this source refuses to start (log says so) and stops itself - stop interp-bsrl first.",
   "command": "{python:python/evolinterp}",
   "args": [
     "-m",
@@ -7,7 +7,9 @@
     "--model",
     "toy",
     "--prefix",
-    "interp"
+    "interp",
+    "--source",
+    "interp-toy"
   ],
   "cwd": "../../../python/evolinterp",
   "autostart": false,

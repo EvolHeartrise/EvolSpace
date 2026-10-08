@@ -28,8 +28,42 @@ export class InstanceState {
   readonly cleanups: Array<() => void> = [];
   readonly interactives = new Set<THREE.Object3D>();
   readonly logBucket = new TokenBucket(5, 20);
+  /** Interactives seen under the instance root at least once. */
+  private attachedOnce = new WeakSet<THREE.Object3D>();
+  private pruneAt = PRUNE_MIN;
 
   constructor(public props: Record<string, unknown>) {}
+
+  /**
+   * True if `o` is a registered interactive that is currently part of `root`'s
+   * subtree. A widget that rebuilds its meshes detaches the old ones without
+   * telling us: an interactive that was under `root` once and no longer is gets
+   * dropped from the registry. One registered before being attached is kept
+   * (and skipped) until it shows up.
+   */
+  isLiveInteractive(o: THREE.Object3D, root: THREE.Object3D | null): boolean {
+    if (!this.interactives.has(o)) return false;
+    if (root && isUnder(o, root)) {
+      this.attachedOnce.add(o);
+      return true;
+    }
+    if (this.attachedOnce.has(o)) {
+      this.interactives.delete(o);
+      delete o.userData.evolInteractive;
+    }
+    return false;
+  }
+
+  /** Register an interactive; sweeps detached ones as the set grows (amortized O(1)). */
+  addInteractive(o: THREE.Object3D, entityId: string, root: THREE.Object3D): void {
+    o.userData.evolInteractive = entityId;
+    this.interactives.add(o);
+    if (isUnder(o, root)) this.attachedOnce.add(o);
+    if (this.interactives.size >= this.pruneAt) {
+      for (const x of this.interactives) this.isLiveInteractive(x, root);
+      this.pruneAt = Math.max(PRUNE_MIN, this.interactives.size * 2);
+    }
+  }
 
   release(): void {
     this.alive = false;
@@ -39,6 +73,13 @@ export class InstanceState {
     for (const o of this.interactives) delete o.userData.evolInteractive;
     this.interactives.clear();
   }
+}
+
+const PRUNE_MIN = 32;
+
+function isUnder(o: THREE.Object3D, root: THREE.Object3D): boolean {
+  for (let cur: THREE.Object3D | null = o; cur; cur = cur.parent) if (cur === root) return true;
+  return false;
 }
 
 export interface ContextEnv {
@@ -100,8 +141,7 @@ export function createWidgetContext(
     },
     interactive(obj) {
       if (!state.alive || !obj) return;
-      obj.userData.evolInteractive = entityId;
-      state.interactives.add(obj);
+      state.addInteractive(obj, entityId, root);
     },
     spawnChild(childWidget, props, transform, name) {
       // Server ids are 1-64 chars of [A-Za-z0-9_.:-]; randomId() adds ≤ 20.

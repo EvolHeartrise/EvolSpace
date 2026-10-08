@@ -73,8 +73,7 @@ renderer.setPixelRatio(1);
 document.body.appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#2b3140');
-const grid = new THREE.GridHelper(10, 20, 0x445066, 0x343c4d);
-scene.add(grid);
+// The runtime draws its own floor grid + origin marker (setEnvironment({ grid })).
 const camera = new THREE.PerspectiveCamera(70, 1280 / 800, 0.01, 50);
 camera.position.set(0, 1.55, 0);
 camera.lookAt(0, 1.45, -1);

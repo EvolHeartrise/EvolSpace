@@ -17,9 +17,9 @@ afterEach(() => {
 });
 
 describe('slider', () => {
-  it('emits its initial value and shows the label/value', async () => {
+  it('shows the label/value and does not emit on create by default', async () => {
     h = await mount(slider, { min: 0, max: 10, step: 1, value: 3, label: 'Layer' });
-    expect(h.emitsOn('value')).toEqual([3]);
+    expect(h.emitsOn('value')).toEqual([]);
     expect(h.hasText('Layer')).toBe(true);
     expect(h.hasText('3')).toBe(true);
     // Integer steps ≤ 24 draw tick marks.
@@ -49,8 +49,14 @@ describe('slider', () => {
     expect(h.props.value).toBe(0.75);
   });
 
+  it('emitOnCreate emits the stored value once on create', async () => {
+    h = await mount(slider, { min: 0, max: 10, step: 1, value: 3, emitOnCreate: true });
+    expect(h.emitsOn('value')).toEqual([3]);
+    expect(h.rec.setProps).toEqual([]);
+  });
+
   it('dragging is relative: grabbing the knob off-center does not jump', async () => {
-    h = await mount(slider, { min: 0, max: 1, value: 0.5, length: 0.2 });
+    h = await mount(slider, { min: 0, max: 1, value: 0.5, length: 0.2, emitOnCreate: true });
     const [x, y, z] = h.partPosition('knob');
     h.drag('knob', [0, 0, 0], { from: [x + 0.008, y, z] });
     expect(h.lastEmit('value')).toBe(0.5);
@@ -73,18 +79,72 @@ describe('slider', () => {
     expect(h.lastEmit('value')).toBe(0);
   });
 
-  it('input sets without persisting and only emits on change (cycle-safe)', async () => {
+  it('input sets, only emits on change (cycle-safe) and persists (throttled), no commit', async () => {
+    vi.useFakeTimers();
     h = await mount(slider, { min: 0, max: 1, value: 0.2 });
-    h.rec.emits.length = 0;
     h.input('value', 0.6);
     h.input('value', 0.6);
     h.input('value', tensor('f32', [1], [0.6]));
     expect(h.emitsOn('value')).toEqual([0.6]);
+    expect(h.emitsOn('commit')).toEqual([]);
+    expect(h.rec.setProps).toEqual([{ value: 0.6 }]); // leading call; repeats of the stored value write nothing
+    for (let i = 1; i <= 10; i++) h.input('value', i / 10);
+    expect(h.rec.setProps.length).toBe(1); // throttled
+    vi.advanceTimersByTime(300);
+    expect(h.rec.setProps).toEqual([{ value: 0.6 }, { value: 1 }]);
+    expect(h.props.value).toBe(1);
+  });
+
+  it('the mirror never persists inputs', async () => {
+    h = await mount(slider, { min: 0, max: 1, value: 0.2 }, { isMirror: true });
+    h.input('value', 0.6);
+    expect(h.lastEmit('value')).toBe(0.6);
     expect(h.rec.setProps).toEqual([]);
   });
 
+  it('min/max inputs override the range; an out-of-range value re-applies when the range widens', async () => {
+    vi.useFakeTimers();
+    h = await mount(slider, { min: 0, max: 11, step: 1, value: 0, decimals: 0 });
+    // Channel value arrives before the dataset's size (e.g. interp.ctl.sample before interp.meta).
+    h.input('value', 1500);
+    expect(h.lastEmit('value')).toBe(11);
+    expect(h.rec.setProps).toEqual([{ value: 1500 }]); // the request, not the clamped value
+    h.input('max', 2047);
+    expect(h.lastEmit('value')).toBe(1500);
+    expect(h.hasText('1500')).toBe(true);
+    expect(h.root.getObjectByName('ticks')).toBeFalsy(); // 2047 steps: no tick marks
+    h.input('max', 'junk');
+    h.input('max', Number.NaN);
+    expect(h.lastEmit('value')).toBe(1500);
+    h.input('max', 9); // range shrinks: clamp
+    expect(h.lastEmit('value')).toBe(9);
+    expect(h.root.getObjectByName('ticks')).toBeTruthy();
+    h.input('min', 5);
+    h.input('value', 0);
+    expect(h.lastEmit('value')).toBe(5);
+    expect(h.emitsOn('commit')).toEqual([]);
+    // Dragging covers the overridden range.
+    h.drag('knob', [-1, 0, 0]);
+    expect(h.lastEmit('value')).toBe(5);
+    h.drag('knob', [1, 0, 0]);
+    expect(h.lastEmit('value')).toBe(9);
+    expect(h.lastEmit('commit')).toBe(9);
+    expect(h.rec.errors).toEqual([]);
+  });
+
+  it('a range prop edit does not undo an input-driven value', async () => {
+    h = await mount(slider, { min: 0, max: 10, step: 1, value: 2 });
+    h.input('value', 7);
+    await h.setProps({ max: 20 });
+    expect(h.lastEmit('value')).toBe(7);
+    await h.setProps({ max: 5 });
+    expect(h.lastEmit('value')).toBe(5);
+    await h.setProps({ max: 20 }); // remembered request fits again
+    expect(h.lastEmit('value')).toBe(7);
+  });
+
   it('vertical orientation drags along +Y', async () => {
-    h = await mount(slider, { min: 0, max: 1, value: 0, length: 0.2, orientation: 'vertical' });
+    h = await mount(slider, { min: 0, max: 1, value: 0, length: 0.2, orientation: 'vertical', emitOnCreate: true });
     h.drag('knob', [0.1, 0, 0]); // sideways: no change
     expect(h.lastEmit('value')).toBe(0);
     h.drag('knob', [0, 0.1, 0]);
