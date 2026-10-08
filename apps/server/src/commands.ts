@@ -214,7 +214,10 @@ export function registerBuiltinCommands(reg: CommandRegistry, d: BuiltinDeps): v
       const channel = stringArg(args, 'channel');
       if (!('value' in args) || args.value === undefined) throw new CommandError('missing {value}');
       try {
-        const { seq } = d.publish(channel, args.value, { producer: `command:${ctx.origin}`, ...(ctx.clientId ? { origin: ctx.clientId } : {}) });
+        // No `origin`: the requesting client has NOT delivered this value locally (unlike its own
+        // channel.publish), so a 'no-echo' client must still receive it — e.g. the voice fast path
+        // run for the headset that spoke.
+        const { seq } = d.publish(channel, args.value, { producer: `command:${ctx.origin}` });
         return { channel, seq };
       } catch (e) {
         const status = (e as { status?: unknown }).status;
