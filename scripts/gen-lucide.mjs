@@ -23,6 +23,10 @@ const ICONS = [
   'terminal', 'message-circle-question-mark', 'circle-check', 'circle-x', 'circle-dot',
   // github
   'git-pull-request', 'git-merge', 'git-branch', 'gauge', 'timer',
+  // weather
+  'sun', 'moon', 'cloud', 'cloudy', 'cloud-sun', 'cloud-moon', 'cloud-rain', 'cloud-drizzle', 'cloud-snow', 'cloud-lightning',
+  'cloud-fog', 'cloud-hail', 'cloud-sun-rain', 'cloud-moon-rain', 'cloud-rain-wind', 'snowflake', 'haze', 'wind', 'droplets',
+  'droplet', 'thermometer', 'umbrella', 'sunrise', 'sunset', 'navigation-2', 'map-pin', 'arrow-up',
 ];
 
 const nodes = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/lucide-static/icon-nodes.json'), 'utf8'));
