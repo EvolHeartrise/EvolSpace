@@ -1,13 +1,17 @@
 // github-item — detail card for one GitHub issue or pull request: status chip, number, title,
 // author/dates/labels, PR facts (branch → base, diff size, CI, review), then the description and
-// comments as paged markup (Prev/Next page). Reads the prefetched `<prefix>.details` channel of the
-// `github` source, so switching items is instant. Link an item-list's `select` output to `item`
-// (tap a row → its details), or set `number`.
+// comments in a scroll view (pinch-drag the text or the scrollbar). Reads the prefetched
+// `<prefix>.details` channel of the `github` source, so switching items is instant. Link an
+// item-list's `select` output to `item` (tap a row → its details), or set `number`.
+//
+// The scroll view is virtualized: block heights are estimated (then measured once troika lays a
+// block out), only blocks near the viewport get text meshes, and texts are clipped to it (troika
+// clipRect); rules / code backgrounds are clipped by hand.
 
 import type { ChannelValue, InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
 import type * as THREE from 'three';
-import { disposeTree, ownMaterial, sharedGeometry } from '../../shared/resources.ts';
-import { makeText, MeasureWatch, parseMarkup, setColorRanges, spanColorRanges, textSize, type Block, type Text } from '../../shared/text.ts';
+import { disposeTree, ownMaterial, sharedGeometry, hitMaterial } from '../../shared/resources.ts';
+import { makeText, parseMarkup, setColorRanges, spanColorRanges, textSize, type Block, type Text } from '../../shared/text.ts';
 import { hexToInt, resolveColor } from '../../shared/color.ts';
 import { truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
@@ -41,6 +45,8 @@ interface Detail {
 }
 
 const PAD = 0.018;
+/** Room for the scrollbar at the right of the text column. */
+const BAR = 0.014;
 
 /** "#11", "11", "issue 11", "PR #62", {id: "#11"}, {number: 11}, a GitHub URL → 11 (NaN if none). */
 export function itemNumber(v: unknown): number {
@@ -81,15 +87,15 @@ function parseBlocks(src: string): Block[] {
 const definition: WidgetDefinition<Props> = {
   description:
     'GitHub issue/PR detail card: status chip, number, title, author/dates/labels, PR branch/diff/CI/review, then description + comments ' +
-    "as paged markup (Prev/Next page). Reads the github source's prefetched <prefix>.details channel (instant). Input item: an item-list " +
+    "in a scroll view (pinch-drag the text or scrollbar). Reads the github source's prefetched <prefix>.details channel (instant). Input item: an item-list " +
     "select (link it), '#11', 11 or a URL; prop number.",
-  version: '1.0.0',
+  version: '1.1.0',
   props: {
     channel: { type: 'channel', default: 'github.bsrl.details', description: "Details channel of the github source ({items: {'<n>': Detail}})." },
     control: { type: 'channel', default: 'github.bsrl.ctl.show', description: "Channel of show requests ('#11', 11, …) — the voice fast path 'show issue 11' publishes here." },
     number: { type: 'integer', default: 0, min: 0, max: 1000000, description: 'Issue/PR number shown (set by the item input).' },
     width: { type: 'number', default: 0.56, min: 0.3, max: 2, step: 0.01, description: 'Card width (m).' },
-    height: { type: 'number', default: 0.62, min: 0.3, max: 2, step: 0.01, description: 'Card height (m); longer text pages.' },
+    height: { type: 'number', default: 0.62, min: 0.3, max: 2, step: 0.01, description: 'Card height (m); longer text scrolls.' },
     textSize: { type: 'number', default: 0.0125, min: 0.006, max: 0.04, step: 0.0005, description: 'Body em height (m).' },
   },
   inputs: { item: { type: 'any', description: "Item to show: item-list select output, '#11', 11 or a GitHub URL." } },
@@ -102,30 +108,36 @@ const definition: WidgetDefinition<Props> = {
     let details: Record<string, Detail> = {};
     let detail: Detail | null = null;
     let group: THREE.Group | null = null;
-    let pageGroup: THREE.Group | null = null;
-    let blocks: Block[] = [];
-    let page = 0;
-    let pageStarts: number[] = [0];
-    let estPages = 1;
-    let pageItems: Array<{ b: Block; text: Text | null; marker: Text | null; deco: THREE.Mesh | null; size: number; indent: number; font: 'sans' | 'mono' }> = [];
-    let bodyTop = 0;
-    let bodyBottom = 0;
-    const watch = new MeasureWatch();
-    let pageText: Text | null = null;
-    let prevBtn: THREE.Mesh | null = null;
-    let nextBtn: THREE.Mesh | null = null;
     let decoMat: THREE.MeshBasicMaterial | null = null;
     let codeMat: THREE.MeshBasicMaterial | null = null;
-    let pressPart = '';
-    let pressHand: string | null = null;
     let current = -1;
+
+    // scroll view state
+    interface Live { text: Text | null; marker: Text | null; deco: THREE.Mesh | null; size: number; indent: number; font: 'sans' | 'mono'; measured: boolean }
+    let view: THREE.Group | null = null;
+    let blocks: Block[] = [];
+    let heights = new Float64Array(0);
+    let offsets = new Float64Array(1); // offsets[i] = top of block i below the content top; offsets[n] = total
+    const live = new Map<number, Live>();
+    let scroll = 0;
+    let bodyTop = 0, bodyBottom = 0;
+    let track: THREE.Mesh | null = null;
+    let thumb: THREE.Mesh | null = null;
+    let dirty = false;
+    let drag: { hand: string; part: string; y0: number; scroll0: number } | null = null;
 
     const W = () => ctx.props.width, H = () => ctx.props.height, S = () => ctx.props.textSize;
     const colW = () => W() - 2 * PAD;
+    const textW = () => colW() - BAR;
+    const viewH = () => Math.max(0.01, bodyTop - bodyBottom);
+    const total = () => offsets[blocks.length] ?? 0;
+    const maxScroll = () => Math.max(0, total() - viewH());
 
     function build(): void {
       if (group) disposeTree(group);
-      pageGroup = null;
+      for (const l of live.values()) freeLive(l);
+      live.clear();
+      view = null;
       const g = (group = new T.Group());
       g.add(ctx.ui.panel(W(), H()));
       decoMat = ownMaterial(T, resolveColor(theme, 'accent'), { opacity: 0.45 });
@@ -140,6 +152,7 @@ const definition: WidgetDefinition<Props> = {
         t.position.set(x0, y, STYLE.zText);
         g.add(t);
         ctx.root.add(g);
+        blocks = [];
         return;
       }
       // status chip + "Issue #11"
@@ -153,9 +166,7 @@ const definition: WidgetDefinition<Props> = {
       chip.add(chipText);
       const kind = makeText(ctx, `${d.kind === 'pr' ? 'Pull request' : 'Issue'} #${d.number}`, { size: s, anchorX: 'left', anchorY: 'middle', color: theme.textDim, weight: 'semibold' });
       kind.position.set(x0 + chipW + s * 0.8, y - chipH / 2, STYLE.zText);
-      pageText = makeText(ctx, '', { size: s * 0.85, anchorX: 'right', anchorY: 'middle', color: theme.textDim });
-      pageText.position.set(W() / 2 - PAD, y - chipH / 2, STYLE.zText);
-      g.add(chip, kind, pageText);
+      g.add(chip, kind);
       y -= chipH + s * 0.7;
 
       // title (at most 3 lines), meta, facts
@@ -192,33 +203,41 @@ const definition: WidgetDefinition<Props> = {
       g.add(rule);
       bodyTop = y - s * 0.8;
 
-      // footer: page buttons
-      const bh = s * 2.2, bw = s * 8;
-      const fy = -H() / 2 + PAD + bh / 2;
-      bodyBottom = fy + bh / 2 + s * 0.6;
-      prevBtn = ctx.ui.panel(bw, bh, { color: theme.surface });
-      prevBtn.position.set(-W() / 2 + PAD + bw / 2, fy, STYLE.zContent);
-      prevBtn.name = 'btn:prev';
-      nextBtn = ctx.ui.panel(bw, bh, { color: theme.surface });
-      nextBtn.position.set(W() / 2 - PAD - bw / 2, fy, STYLE.zContent);
-      nextBtn.name = 'btn:next';
-      for (const [btn, label] of [[prevBtn, 'Prev page'], [nextBtn, 'Next page']] as const) {
-        const t = makeText(ctx, label, { size: s * 0.9, anchorX: 'center', anchorY: 'middle', color: theme.text });
-        t.position.set(0, 0, STYLE.zText);
-        btn.add(t);
-        ctx.interactive(btn);
-        g.add(btn);
-      }
+      bodyBottom = -H() / 2 + PAD;
+
+      // the scroll view: a hit plane for pinch-drag scrolling, the scrollbar, the (virtual) content
+      const vh = bodyTop - bodyBottom;
+      const hit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
+      hit.scale.set(textW(), vh, 0.01);
+      hit.position.set(x0 + textW() / 2, bodyBottom + vh / 2, 0.004);
+      hit.name = 'body';
+      ctx.interactive(hit);
+      track = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.border));
+      track.scale.set(s * 0.35, vh, 1);
+      track.position.set(W() / 2 - PAD - s * 0.2, bodyBottom + vh / 2, STYLE.zContent);
+      track.raycast = () => {};
+      thumb = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.textDim));
+      thumb.position.set(track.position.x, 0, STYLE.zOverlay);
+      thumb.raycast = () => {};
+      const barHit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
+      barHit.scale.set(BAR + s, vh, 0.01);
+      barHit.position.set(track.position.x, track.position.y, 0.004);
+      barHit.name = 'scrollbar';
+      ctx.interactive(barHit);
+      view = new T.Group();
+      g.add(hit, track, thumb, barHit, view);
       ctx.root.add(g);
 
       blocks = parseBlocks(documentOf(d));
-      pageStarts = [0];
-      page = 0;
-      estPages = estimatePages();
-      showPage();
+      heights = new Float64Array(blocks.length);
+      for (let i = 0; i < blocks.length; i++) heights[i] = blockHeight(blocks[i], null);
+      offsets = new Float64Array(blocks.length + 1);
+      recomputeOffsets();
+      scroll = 0;
+      render();
     }
 
-    /** Height of a block at the body column (estimate unless `mesh` has been measured). */
+    /** Height of a block in the text column (estimate unless `mesh` has been measured). */
     function blockHeight(b: Block, mesh: THREE.Object3D | null): number {
       const s = S();
       if (b.kind === 'blank') return s * 0.6;
@@ -226,106 +245,118 @@ const definition: WidgetDefinition<Props> = {
       const size = b.kind === 'heading' ? s * 1.15 : s;
       const indent = b.kind === 'bullet' ? (b.indent + 1) * s * 1.2 : 0;
       const pad = b.kind === 'code' ? s * 0.5 : 0;
-      const h = textSize(mesh ?? ({} as THREE.Object3D), { text: b.text, size, maxWidth: Math.max(0.02, colW() - indent - 2 * pad), font: b.kind === 'code' ? 'mono' : 'sans' }).height;
+      const h = textSize(mesh ?? ({} as THREE.Object3D), { text: b.text, size, maxWidth: Math.max(0.02, textW() - indent - 2 * pad), font: b.kind === 'code' ? 'mono' : 'sans' }).height;
       return h + 2 * pad + s * 0.35 + (b.kind === 'heading' ? s * 0.35 : 0);
     }
 
-    function estimatePages(): number {
-      const avail = bodyTop - bodyBottom;
-      let n = 1, used = 0;
-      for (const b of blocks) {
-        const h = blockHeight(b, null);
-        if (used > 0 && used + h > avail) { n++; used = 0; if (b.kind === 'blank' || b.kind === 'rule') continue; }
-        used += h;
-      }
-      return n;
+    function recomputeOffsets(): void {
+      let y = 0;
+      for (let i = 0; i < blocks.length; i++) { offsets[i] = y; y += heights[i]; }
+      offsets[blocks.length] = y;
     }
 
-    /** Create the current page's texts (from pageStarts[page]); layout() decides what fits. */
-    function showPage(): void {
-      if (!group) return;
-      if (pageGroup) disposeTree(pageGroup);
-      pageGroup = new T.Group();
-      group.add(pageGroup);
-      pageItems = [];
-      const s = S();
+    function makeLive(i: number): Live {
+      const b = blocks[i], s = S();
       const accent = resolveColor(theme, 'accent');
-      const spanCols = { bold: hexToInt(accent), code: hexToInt(theme.accent2) };
-      const avail = bodyTop - bodyBottom;
-      let est = 0;
-      for (let i = pageStarts[page]; i < blocks.length && est < avail * 1.4; i++) {
-        const b = blocks[i];
-        est += blockHeight(b, null);
-        const it = { b, text: null as Text | null, marker: null as Text | null, deco: null as THREE.Mesh | null, size: s, indent: 0, font: 'sans' as 'sans' | 'mono' };
-        if (b.kind === 'heading') it.size = s * 1.15;
-        if (b.kind === 'code') it.font = 'mono';
-        if (b.kind === 'bullet') it.indent = (b.indent + 1) * s * 1.2;
-        if (b.kind === 'rule' || b.kind === 'code') {
-          it.deco = new T.Mesh(sharedGeometry(T, 'plane'), b.kind === 'rule' ? decoMat! : codeMat!);
-          it.deco.raycast = () => {};
-          pageGroup.add(it.deco);
-        }
-        if (b.kind !== 'rule' && b.kind !== 'blank') {
-          const pad = b.kind === 'code' ? s * 0.5 : 0;
-          it.text = makeText(ctx, b.text, {
-            size: it.size, anchorX: 'left', anchorY: 'top', color: theme.text, font: it.font,
-            maxWidth: Math.max(0.02, colW() - it.indent - 2 * pad), weight: b.strong || b.kind === 'heading' ? 'semibold' : 'regular',
-          });
-          setColorRanges(it.text, spanColorRanges(b.spans, hexToInt(theme.text), spanCols));
-          pageGroup.add(it.text);
-          if (b.kind === 'bullet') {
-            it.marker = makeText(ctx, b.marker ?? '•', { size: it.size, color: accent, anchorX: 'right', anchorY: 'top' });
-            pageGroup.add(it.marker);
-          }
-        }
-        pageItems.push(it);
+      const l: Live = { text: null, marker: null, deco: null, size: s, indent: 0, font: 'sans', measured: false };
+      if (b.kind === 'heading') l.size = s * 1.15;
+      if (b.kind === 'code') l.font = 'mono';
+      if (b.kind === 'bullet') l.indent = (b.indent + 1) * s * 1.2;
+      if (b.kind === 'rule' || b.kind === 'code') {
+        l.deco = new T.Mesh(sharedGeometry(T, 'plane'), b.kind === 'rule' ? decoMat! : codeMat!);
+        l.deco.raycast = () => {};
+        view!.add(l.deco);
       }
-      watch.reset(pageItems.flatMap((i) => (i.text ? [i.text] : [])));
-      layout();
+      if (b.kind !== 'rule' && b.kind !== 'blank') {
+        const pad = b.kind === 'code' ? s * 0.5 : 0;
+        l.text = makeText(ctx, b.text, {
+          size: l.size, anchorX: 'left', anchorY: 'top', color: theme.text, font: l.font,
+          maxWidth: Math.max(0.02, textW() - l.indent - 2 * pad), weight: b.strong || b.kind === 'heading' ? 'semibold' : 'regular',
+        });
+        setColorRanges(l.text, spanColorRanges(b.spans, hexToInt(theme.text), { bold: hexToInt(accent), code: hexToInt(theme.accent2) }));
+        view!.add(l.text);
+        if (b.kind === 'bullet') {
+          l.marker = makeText(ctx, b.marker ?? '•', { size: l.size, color: accent, anchorX: 'right', anchorY: 'top' });
+          view!.add(l.marker);
+        }
+      } else l.measured = true;
+      return l;
     }
 
-    /** Place the page's blocks top-down; blocks that don't fit are hidden and start the next page. */
-    function layout(): void {
-      if (!pageGroup) return;
-      const s = S(), x0 = -W() / 2 + PAD;
-      let y = bodyTop;
-      let end = pageStarts[page] + pageItems.length;
-      let full = false;
-      for (let k = 0; k < pageItems.length; k++) {
-        const it = pageItems[k], b = it.b;
-        const h = blockHeight(b, it.text);
-        // the first block always shows (even if taller than the page); later ones only while they fit
-        if (!full && k > 0 && y - h < bodyBottom) { full = true; end = pageStarts[page] + k; }
-        if (full) {
-          for (const o of [it.text, it.marker, it.deco]) if (o) o.visible = false;
+    function freeLive(l: Live): void {
+      for (const o of [l.text, l.marker]) if (o) disposeTree(o);
+      if (l.deco) l.deco.removeFromParent(); // shared geometry + the card's materials
+    }
+
+    /** Place what's in (or near) the viewport; create/free block meshes as they enter/leave. */
+    function render(): void {
+      if (!view || !blocks.length) return;
+      const s = S(), x0 = -W() / 2 + PAD, vh = viewH();
+      scroll = Math.min(Math.max(0, scroll), maxScroll());
+      const lo = scroll - vh * 0.5, hi = scroll + vh * 1.5;
+      for (const [i, l] of live) {
+        if (offsets[i + 1] < lo - vh || offsets[i] > hi + vh) { freeLive(l); live.delete(i); }
+      }
+      for (let i = 0; i < blocks.length; i++) {
+        if (offsets[i + 1] < lo || offsets[i] > hi) {
+          const off = live.get(i); // kept around for scrolling back, but out of view
+          if (off) for (const o of [off.text, off.marker, off.deco]) if (o) o.visible = false;
           continue;
         }
-        for (const o of [it.text, it.marker, it.deco]) if (o) o.visible = true;
-        if (b.kind === 'heading' && k > 0) y -= s * 0.35;
+        let l = live.get(i);
+        if (!l) { l = makeLive(i); live.set(i, l); }
+        const b = blocks[i];
+        let top = bodyTop + scroll - offsets[i]; // block top in card coords
+        if (b.kind === 'heading' && i > 0) top -= s * 0.35;
         const pad = b.kind === 'code' ? s * 0.5 : 0;
-        if (b.kind === 'rule') {
-          it.deco!.scale.set(colW(), 0.0012, 1);
-          it.deco!.position.set(0, y - s * 0.4, STYLE.zContent);
-        } else if (it.text) {
-          it.text.position.set(x0 + it.indent + pad, y - pad, STYLE.zText);
-          if (it.marker) it.marker.position.set(x0 + it.indent - s * 0.4, y, STYLE.zText);
-          if (it.deco) {
-            const dh = h - s * 0.35, dw = colW() - it.indent;
-            it.deco.scale.set(dw, dh, 1);
-            it.deco.position.set(x0 + it.indent + dw / 2, y - dh / 2, STYLE.zContent);
+        const inView = top > bodyBottom && top - heights[i] < bodyTop;
+        if (l.text) {
+          l.text.visible = inView;
+          const ty = top - pad;
+          l.text.position.set(x0 + l.indent + pad, ty, STYLE.zText);
+          // troika clipRect is in the text's own frame: [minX, minY, maxX, maxY]
+          (l.text as unknown as { clipRect: number[] | null }).clipRect = [-1, bodyBottom - ty, 10, bodyTop - ty];
+        }
+        if (l.marker) {
+          l.marker.visible = inView && top <= bodyTop + 1e-6 && top - l.size >= bodyBottom;
+          l.marker.position.set(x0 + l.indent - s * 0.4, top, STYLE.zText);
+        }
+        if (l.deco) {
+          // clip the rule / code background to the viewport by hand
+          const h0 = b.kind === 'rule' ? 0.0012 : heights[i] - s * 0.35;
+          const yTop = b.kind === 'rule' ? top - s * 0.4 : top;
+          const a = Math.min(yTop, bodyTop), z = Math.max(yTop - h0, bodyBottom);
+          const dw = colW() - BAR - l.indent;
+          l.deco.visible = a > z;
+          if (a > z) {
+            l.deco.scale.set(dw, b.kind === 'rule' ? 0.0012 : a - z, 1);
+            l.deco.position.set(x0 + l.indent + dw / 2, (a + z) / 2, STYLE.zContent);
           }
         }
-        y -= b.kind === 'heading' && k > 0 ? h - s * 0.35 : h;
       }
-      // skip leading blanks/rules on the next page
-      while (end < blocks.length && (blocks[end].kind === 'blank' || blocks[end].kind === 'rule')) end++;
-      pageStarts[page + 1] = end;
-      pageStarts.length = page + 2;
-      const more = end < blocks.length;
-      const total = Math.max(estPages, page + (more ? 2 : 1));
-      pageText?.set(`page ${page + 1} / ${more ? total : page + 1}`);
-      if (prevBtn) prevBtn.visible = page > 0;
-      if (nextBtn) nextBtn.visible = more;
+      // scrollbar
+      const over = total() > vh + 1e-6;
+      track!.visible = thumb!.visible = over;
+      if (over) {
+        const th = Math.max(s * 2, (vh * vh) / total());
+        thumb!.scale.set(s * 0.35, th, 1);
+        thumb!.position.y = bodyTop - th / 2 - (scroll / maxScroll()) * (vh - th);
+      }
+    }
+
+    /** Swap estimated heights for measured ones as troika finishes laying out live blocks. */
+    function remeasure(): boolean {
+      let changed = false;
+      for (const [i, l] of live) {
+        if (l.measured || !l.text) continue;
+        const info = (l.text as unknown as { textRenderInfo?: unknown }).textRenderInfo;
+        if (!info) continue;
+        l.measured = true;
+        const h = blockHeight(blocks[i], l.text);
+        if (Math.abs(h - heights[i]) > 1e-5) { heights[i] = h; changed = true; }
+      }
+      if (changed) recomputeOffsets();
+      return changed;
     }
 
     function show(n: number): void {
@@ -341,7 +372,7 @@ const definition: WidgetDefinition<Props> = {
       if (!items || typeof items !== 'object') { ctx.error('github-item: expected {items: {"<n>": Detail}}'); return; }
       details = items as Record<string, Detail>;
       const next = details[String(ctx.props.number)] ?? null;
-      // a periodic refresh that didn't change this item keeps the card (and its page) as is
+      // a periodic refresh that didn't change this item keeps the card (and its scroll) as is
       if (detail && next && JSON.stringify(next) === JSON.stringify(detail)) { detail = next; return; }
       current = -1;
       show(ctx.props.number);
@@ -374,22 +405,32 @@ const definition: WidgetDefinition<Props> = {
       onInteraction(e: InteractionEvent) {
         if (e.handler === 'hover') return;
         const part = e.objectName ?? '';
+        const y = e.localPoint[1];
         if (e.phase === 'start') {
-          if (part.startsWith('btn:')) { pressPart = part; pressHand = e.hand; }
-          return;
+          if (drag || (part !== 'body' && part !== 'scrollbar')) return;
+          drag = { hand: e.hand, part, y0: y, scroll0: scroll };
+        } else if (!drag || e.hand !== drag.hand) return;
+        else if (e.phase === 'end' || e.phase === 'cancel') { drag = null; return; }
+        if (drag.part === 'body') scroll = drag.scroll0 + (y - drag.y0); // content follows the hand
+        else {
+          // the thumb jumps to the hand: map the bar position to the scroll range
+          const vh = viewH(), th = Math.max(S() * 2, (vh * vh) / Math.max(total(), 1e-6));
+          const u = (bodyTop - th / 2 - y) / Math.max(1e-6, vh - th);
+          scroll = Math.min(1, Math.max(0, u)) * maxScroll();
         }
-        if (e.hand !== pressHand || (e.phase !== 'end' && e.phase !== 'cancel')) return;
-        pressHand = null;
-        if (e.phase !== 'end') return;
-        if (pressPart === 'btn:next' && pageStarts[page + 1] < blocks.length) { page++; showPage(); }
-        else if (pressPart === 'btn:prev' && page > 0) { page--; showPage(); }
+        dirty = true;
       },
       update() {
-        if (watch.changed()) layout();
+        if (remeasure()) dirty = true;
+        if (!dirty) return;
+        dirty = false;
+        render();
       },
       dispose() {
         channel.dispose();
         control.dispose();
+        for (const l of live.values()) freeLive(l);
+        live.clear();
         if (group) disposeTree(group);
       },
     };
