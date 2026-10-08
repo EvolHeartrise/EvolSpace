@@ -30,6 +30,7 @@ it('one single-select question: the first tap answers', async () => {
   h.publish('agent.question', { id: 'q1', questions: [color], status: 'closed' });
   h.frame();
   expect(h.hasText('Claude asks')).toBe(false);
+  expect(h.hasText('No question from Claude right now')).toBe(true);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
 });

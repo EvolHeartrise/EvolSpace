@@ -110,7 +110,16 @@ const definition: WidgetDefinition<Props> = {
       if (group) disposeTree(group);
       group = null;
       countdown = null;
-      if (!pending || pending.status !== 'open') return;
+      if (!pending || pending.status !== 'open') {
+        // normally removed by the hook when the question closes; a stray card says so
+        const g = (group = new T.Group());
+        g.add(ctx.ui.panel(W(), 0.05, {}));
+        const t = makeText(ctx, 'No question from Claude right now', { size: 0.013, anchorX: 'center', anchorY: 'middle', color: theme.textDim });
+        t.position.z = STYLE.zText;
+        g.add(t);
+        ctx.root.add(g);
+        return;
+      }
       const g = (group = new T.Group());
       const x0 = -W() / 2 + PAD, cw = W() - 2 * PAD;
       const accent = resolveColor(theme, 'accent');
@@ -226,6 +235,7 @@ const definition: WidgetDefinition<Props> = {
       build();
     }
 
+    build();
     const channel = new ChannelProp(ctx, setQuestion);
 
     return {
