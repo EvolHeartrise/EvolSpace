@@ -1,6 +1,6 @@
 // video — URL routing (fetch via the video source vs. play directly), time format, the no-DOM fallback.
 import { expect, it } from 'vitest';
-import video, { clock, needsFetch } from '../widgets/video/widget.ts';
+import video, { clock, needsFetch, stepSpeed } from '../widgets/video/widget.ts';
 import { mount } from './harness.ts';
 
 it('fetches remote links through the video source, plays same-origin paths directly', () => {
@@ -36,4 +36,28 @@ it('asks the video source for a YouTube URL and shows its progress (no DOM in te
   expect(h.rec.errors).toEqual([]);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
+});
+
+it('steps playback speed through 0.25×–2× with the − / + buttons and persists it', async () => {
+  expect(stepSpeed(1, 1)).toBe(1.25);
+  expect(stepSpeed(1, -1)).toBe(0.75);
+  expect(stepSpeed(2, 1)).toBe(2);
+  expect(stepSpeed(0.25, -1)).toBe(0.25);
+  expect(stepSpeed(1.1, -1)).toBe(1); // off-list speeds snap
+  const h = await mount(video, { url: '/media/x.mp4' });
+  h.frame();
+  expect(h.hasText('1×')).toBe(true);
+  h.press('btn:faster', 'drag');
+  expect(h.rec.setProps.at(-1)).toEqual({ speed: 1.25 });
+  h.press('btn:slower', 'drag');
+  h.press('btn:slower', 'drag');
+  expect(h.rec.setProps.at(-1)).toEqual({ speed: 0.75 });
+  h.frame();
+  expect(h.hasText('0.75×')).toBe(true);
+  h.input('speed', 2);
+  h.frame();
+  expect(h.hasText('2×')).toBe(true);
+  expect(h.root.getObjectByName('icon:play')).toBeTruthy(); // Lucide icons in the bar
+  expect(h.root.getObjectByName('icon:volume-2')).toBeTruthy();
+  h.dispose();
 });

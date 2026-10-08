@@ -196,6 +196,7 @@ Port→channel values are published by the client running the widget (the headse
 | `billboard.ts` | `Billboard` (face the rendering camera; yaw or full) |
 | `segments.ts` | `SegmentMath` (orient unit rods between points), `readVec3` |
 | `shape.ts` | implementation behind `shape`/`box` |
+| `icons.ts` | Lucide icons as flat stroke meshes: `makeIcon(ctx, 'play', {size, color})`, `setIcon`; data in `lucide-icons.ts` (generated — add icons with `node scripts/gen-lucide.mjs <name>`) |
 
 Text layout note: troika measures glyphs asynchronously. Lay out with `textSize()` (estimate
 until measured), keep a `MeasureWatch` over your texts and re-run layout in `update()` when

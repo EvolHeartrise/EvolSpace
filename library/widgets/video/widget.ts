@@ -4,13 +4,15 @@
 // HTTPS). Paths starting with /media/ (or other same-origin URLs) play directly.
 //
 // The picture is a VideoTexture on an unlit plane sized from the video's aspect ratio. Controls
-// under it: play/pause, −10 s / +10 s, mute, a seek bar (pinch-drag), time and title. Playback is
-// local to each client (headset, desktop, the screenshot mirror — which is always muted).
+// under it (Lucide icons, shared/icons.ts): title + time, a seek bar (pinch-drag), back 10 s,
+// play/pause, forward 10 s, speed − / + (0.25×–2×), mute. Playback is local to each client
+// (headset, desktop, the screenshot mirror — which is always muted).
 
 import type { InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
 import type * as THREE from 'three';
 import { disposeTree, ownMaterial, sharedGeometry, hitMaterial } from '../../shared/resources.ts';
 import { makeText, type Text } from '../../shared/text.ts';
+import { makeIcon, setIcon } from '../../shared/icons.ts';
 import { truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { toScalar } from '../../shared/tensor.ts';
@@ -18,6 +20,7 @@ import { STYLE } from '../../shared/style.ts';
 
 interface Props extends Record<string, unknown> {
   url: string;
+  speed: number;
   width: number;
   autoplay: boolean;
   loop: boolean;
@@ -29,13 +32,14 @@ interface Props extends Record<string, unknown> {
 
 interface MediaEntry { status: string; progress: number; src: string; title: string; duration: number | null; error?: string }
 
-const BAR_H = 0.075;
-const BUTTONS = [
-  { id: 'back', label: '−10 s' },
-  { id: 'play', label: 'Play' },
-  { id: 'fwd', label: '+10 s' },
-  { id: 'mute', label: 'Mute' },
-] as const;
+const BAR_H = 0.088;
+export const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
+/** The next speed step up/down from `cur` (snaps an off-list speed to the list). */
+export function stepSpeed(cur: number, dir: 1 | -1): number {
+  if (dir > 0) return SPEEDS.find((s) => s > cur + 1e-6) ?? SPEEDS[SPEEDS.length - 1];
+  return [...SPEEDS].reverse().find((s) => s < cur - 1e-6) ?? SPEEDS[0];
+}
 
 /** Same-origin or /media/… → play directly; anything else http(s) goes through the video source. */
 export function needsFetch(url: string, origin: string | null): boolean {
@@ -54,12 +58,13 @@ export function clock(s: number): string {
 
 const definition: WidgetDefinition<Props> = {
   description:
-    'Video player screen with controls (play/pause, ±10 s, mute, pinch-drag seek bar, time, title). url: YouTube or any yt-dlp-supported / ' +
+    'Video player screen with Lucide-icon controls (play/pause, ±10 s, speed −/+, mute, pinch-drag seek bar, time, title). url: YouTube or any yt-dlp-supported / ' +
     "direct video link (fetched by the 'video' source into data/media, served at /media/…), or a /media/<file> path. " +
-    'Inputs: url, playing, seek (s).',
+    'Inputs: url, playing, seek (s), speed.',
   version: '1.0.0',
   props: {
     url: { type: 'string', default: '', description: 'YouTube / video URL, or /media/<file>.' },
+    speed: { type: 'number', default: 1, min: 0.25, max: 2, step: 0.25, description: 'Playback speed (persisted when changed in the bar).' },
     width: { type: 'number', default: 0.9, min: 0.1, max: 6, step: 0.05, description: 'Screen width (m); height follows the video aspect.' },
     autoplay: { type: 'boolean', default: true, description: 'Start playing when ready (the browser may require a tap first for sound).' },
     loop: { type: 'boolean', default: false, description: 'Loop playback.' },
@@ -72,6 +77,7 @@ const definition: WidgetDefinition<Props> = {
     url: { type: 'string', description: 'Load this URL.' },
     playing: { type: 'boolean', description: 'Play (true) / pause (false).' },
     seek: { type: 'number', description: 'Jump to this time (s).' },
+    speed: { type: 'number', description: 'Playback speed (0.25–2).' },
   },
   outputs: {},
   interactions: [dragBinding('video-drag', 'drag')],
@@ -90,8 +96,10 @@ const definition: WidgetDefinition<Props> = {
     let status: Text | null = null;
     let titleText: Text | null = null;
     let timeText: Text | null = null;
-    let playLabel: Text | null = null;
-    let muteLabel: Text | null = null;
+    let playIcon: THREE.Mesh | null = null;
+    let muteIcon: THREE.Mesh | null = null;
+    let speedText: Text | null = null;
+    let speed = clampSpeed(Number(ctx.props.speed));
     let fill: THREE.Mesh | null = null;
     let barInv = new T.Matrix4();
     let aspect = 16 / 9;
@@ -106,6 +114,7 @@ const definition: WidgetDefinition<Props> = {
     let offMedia: (() => void) | null = null;
     const v3 = new T.Vector3();
 
+    function clampSpeed(x: number): number { return Number.isFinite(x) ? Math.min(2, Math.max(0.25, x)) : 1; }
     const W = () => ctx.props.width;
     const H = () => W() / aspect;
     const muted = () => ctx.isMirror || !!ctx.props.muted;
@@ -146,6 +155,7 @@ const definition: WidgetDefinition<Props> = {
       v.muted = muted();
       v.volume = Math.min(1, Math.max(0, Number(ctx.props.volume)));
       v.src = s;
+      v.playbackRate = v.defaultPlaybackRate = speed;
       v.load();
       if (screenMat && texture) { screenMat.map = texture; screenMat.color.set('#ffffff'); screenMat.needsUpdate = true; }
     }
@@ -213,41 +223,65 @@ const definition: WidgetDefinition<Props> = {
         bar.position.set(0, -h / 2 - 0.012 - BAR_H / 2, 0.005);
         bar.add(ctx.ui.panel(bw, BAR_H));
         const x0 = -bw / 2 + 0.014, x1 = bw / 2 - 0.014;
+        const top = BAR_H / 2;
         titleText = makeText(ctx, '', { size: 0.0125, anchorX: 'left', anchorY: 'middle', color: theme.text, weight: 'semibold', maxWidth: bw * 0.68, whiteSpace: 'nowrap' });
-        titleText.position.set(x0, BAR_H / 2 - 0.014, STYLE.zText);
+        titleText.position.set(x0, top - 0.014, STYLE.zText);
         timeText = makeText(ctx, '', { size: 0.011, anchorX: 'right', anchorY: 'middle', color: theme.textDim, font: 'mono' });
-        timeText.position.set(x1, BAR_H / 2 - 0.014, STYLE.zText);
-        const sw = x1 - x0;
+        timeText.position.set(x1, top - 0.014, STYLE.zText);
+        const sw = x1 - x0, sy = top - 0.031;
         const track = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.surface));
-        track.scale.set(sw, 0.008, 1);
-        track.position.set(0, 0.002, STYLE.zContent);
+        track.scale.set(sw, 0.006, 1);
+        track.position.set(0, sy, STYLE.zContent);
         fill = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.accent));
-        fill.position.set(x0, 0.002, STYLE.zOverlay);
+        fill.position.set(x0, sy, STYLE.zOverlay);
+        fill.userData.y = sy;
         const seekHit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
-        seekHit.scale.set(sw + 0.01, 0.026, 0.02);
-        seekHit.position.set(0, 0.002, 0.006);
+        seekHit.scale.set(sw + 0.01, 0.022, 0.02);
+        seekHit.position.set(0, sy, 0.006);
         seekHit.name = 'seek';
         ctx.interactive(seekHit);
         for (const m of [track, fill]) m.raycast = () => {};
         bar.add(titleText, timeText, track, fill, seekHit);
-        const btnW = 0.07, gap = 0.008;
-        BUTTONS.forEach((b, i) => {
-          const btn = ctx.ui.panel(btnW, 0.022, { color: theme.surface });
-          btn.position.set(x0 + btnW / 2 + i * (btnW + gap), -BAR_H / 2 + 0.017, STYLE.zContent);
-          btn.name = `btn:${b.id}`;
-          ctx.interactive(btn);
-          const t = makeText(ctx, b.label, { size: 0.0105, anchorX: 'center', anchorY: 'middle', color: theme.text });
-          t.position.z = STYLE.zText;
-          btn.add(t);
-          if (b.id === 'play') playLabel = t;
-          if (b.id === 'mute') muteLabel = t;
-          bar.add(btn);
-        });
+
+        // button row: [back 10] [play] [fwd 10] … [speed − 1× +] [volume]
+        const by = -BAR_H / 2 + 0.024;
+        const round = (id: string, cx: number, d: number, icon: string, opts: { accent?: boolean; label?: string } = {}) => {
+          const b = ctx.ui.panel(d, d, { color: opts.accent ? theme.accent : theme.surface, radius: d / 2 });
+          b.position.set(cx, by, STYLE.zContent);
+          b.name = `btn:${id}`;
+          ctx.interactive(b);
+          const ic = makeIcon(ctx, icon, { size: d * (opts.label ? 0.66 : 0.56), color: opts.accent ? theme.background : theme.text });
+          ic.position.z = STYLE.zText;
+          b.add(ic);
+          if (opts.label) {
+            const t = makeText(ctx, opts.label, { size: d * 0.18, anchorX: 'center', anchorY: 'middle', color: theme.text, weight: 'semibold' });
+            t.position.set(0, -d * 0.01, STYLE.zText + 0.0005);
+            b.add(t);
+          }
+          bar.add(b);
+          return ic;
+        };
+        const d = 0.032, big = 0.04, gap = 0.012;
+        round('back', x0 + d / 2, d, 'rotate-ccw', { label: '10' });
+        playIcon = round('play', x0 + d + gap + big / 2, big, 'play', { accent: true });
+        round('fwd', x0 + d + gap + big + gap + d / 2, d, 'rotate-cw', { label: '10' });
+        muteIcon = round('mute', x1 - d / 2, d, 'volume-2');
+        const sx = x1 - d - gap * 1.6; // speed group, right-aligned before the volume button
+        const sd = 0.026;
+        round('faster', sx - sd / 2, sd, 'plus');
+        speedText = makeText(ctx, '', { size: 0.0125, anchorX: 'center', anchorY: 'middle', color: theme.text, font: 'mono', weight: 'semibold' });
+        speedText.position.set(sx - sd - 0.024, by, STYLE.zText);
+        bar.add(speedText);
+        round('slower', sx - sd - 0.048 - sd / 2, sd, 'minus');
+        const gauge = makeIcon(ctx, 'gauge', { size: 0.018, color: theme.textDim });
+        gauge.position.set(sx - 2 * sd - 0.048 - 0.016, by, STYLE.zText);
+        bar.add(gauge);
         g.add(bar);
         bar.updateMatrix();
         barInv = bar.matrix.clone().invert();
       } else {
-        titleText = timeText = playLabel = muteLabel = null;
+        titleText = timeText = speedText = null;
+        playIcon = muteIcon = null;
         fill = null;
       }
       ctx.root.add(g);
@@ -270,8 +304,9 @@ const definition: WidgetDefinition<Props> = {
         }
       }
       titleText?.set(truncate(title || (entry ? '' : url.replace(/^https?:\/\//, '')) || 'Video', 70));
-      playLabel?.set(playing ? 'Pause' : 'Play');
-      muteLabel?.set(v?.muted || muted() ? 'Unmute' : 'Mute');
+      if (playIcon) setIcon(T, playIcon, playing ? 'pause' : 'play');
+      if (muteIcon) setIcon(T, muteIcon, v?.muted || muted() ? 'volume-x' : 'volume-2');
+      speedText?.set(`${speed}×`);
       paintTime();
     }
 
@@ -284,7 +319,7 @@ const definition: WidgetDefinition<Props> = {
         const bw = Math.max(0.4, Math.min(W(), 1.2)), sw = bw - 0.028;
         const u = dur > 0 ? Math.min(1, t / dur) : 0;
         fill.visible = u > 0;
-        fill.scale.set(Math.max(0.0005, sw * u), 0.008, 1);
+        fill.scale.set(Math.max(0.0005, sw * u), 0.006, 1);
         fill.position.x = -sw / 2 + (sw * u) / 2;
       }
     }
@@ -304,6 +339,7 @@ const definition: WidgetDefinition<Props> = {
         if (blocked && v) { v.muted = muted(); blocked = false; play(); return; }
         part = 'btn:play';
       }
+      if (part === 'btn:slower' || part === 'btn:faster') { setSpeed(stepSpeed(speed, part === 'btn:faster' ? 1 : -1), true); return; }
       if (!v) return;
       if (part === 'btn:play') { if (v.paused || v.ended) play(); else v.pause(); }
       else if (part === 'btn:back') seekTo(v.currentTime - 10);
@@ -315,6 +351,13 @@ const definition: WidgetDefinition<Props> = {
         blocked = false;
         if (!m && v.paused) play();
       }
+      paint();
+    }
+
+    function setSpeed(x: number, persist: boolean): void {
+      speed = clampSpeed(x);
+      if (video) video.playbackRate = video.defaultPlaybackRate = speed;
+      if (persist && !ctx.isMirror && speed !== ctx.props.speed) ctx.setProps({ speed });
       paint();
     }
 
@@ -337,6 +380,7 @@ const definition: WidgetDefinition<Props> = {
           v.volume = Math.min(1, Math.max(0, Number(p.volume)));
           if (p.muted !== prev.muted) v.muted = muted();
         }
+        if (p.speed !== prev.speed) setSpeed(Number(p.speed), false);
         if (p.width !== prev.width || p.showControls !== prev.showControls) build();
         if (p.url !== prev.url || p.prefix !== prev.prefix) load(String(p.url ?? ''));
         paint();
@@ -345,6 +389,7 @@ const definition: WidgetDefinition<Props> = {
         if (port === 'url' && typeof value === 'string') load(value);
         else if (port === 'playing') { if (value && value !== 'false') play(); else video?.pause(); }
         else if (port === 'seek') { const n = toScalar(value); if (Number.isFinite(n)) seekTo(n); }
+        else if (port === 'speed') { const n = toScalar(value); if (n > 0) setSpeed(n, false); }
       },
       onInteraction(e: InteractionEvent) {
         if (e.handler === 'hover') return;
