@@ -47,6 +47,8 @@ export default defineConfig({
   ...(process.env.EVOL_VITE_CACHE_DIR ? { cacheDir: process.env.EVOL_VITE_CACHE_DIR } : {}),
   publicDir: 'public',
   plugins: [standaloneProxy()],
+  // The debug dashboard (src/debug, lazy-loaded) is Preact TSX (automatic runtime).
+  oxc: { jsx: { runtime: 'automatic', importSource: 'preact' } },
   server: {
     port: Number(process.env.EVOL_CLIENT_PORT ?? 5173),
     // Workspace packages are symlinked TS sources (packages/*/src): let Vite read them.
@@ -55,7 +57,7 @@ export default defineConfig({
   optimizeDeps: {
     // Pre-bundle up front so first loads (and Playwright runs) don't trigger a
     // mid-session "new dependencies optimized → reload".
-    include: ['three', 'troika-three-text', 'iwer', '@iwer/devui', '@iwer/sem'],
+    include: ['three', 'troika-three-text', 'iwer', '@iwer/devui', '@iwer/sem', 'preact', 'preact/hooks', 'preact/jsx-runtime', '@preact/signals'],
   },
   build: {
     // Quest Browser is current Chromium.

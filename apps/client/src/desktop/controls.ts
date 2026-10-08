@@ -59,6 +59,12 @@ export class DesktopControls {
   hovering = false;
   pinching = false;
   readonly speed = { normal: 2.0, fast: 6.0 };
+  /**
+   * Extra keyboard filter: return true to ignore a key event (the debug
+   * dashboard ignores keys while focus is in one of its form controls).
+   * Text entry anywhere is always ignored.
+   */
+  keyFilter: ((ev: KeyboardEvent) => boolean) | null = null;
 
   private yaw = 0;
   private pitch = 0;
@@ -229,6 +235,7 @@ export class DesktopControls {
   private onKey(ev: KeyboardEvent, down: boolean): void {
     // Text entry swallows keys; checkboxes/buttons (the page panel) must not.
     if (isTextEntry(ev.target)) return;
+    if (down && this.keyFilter?.(ev)) return;
     if (down) this.keys.add(ev.code); else this.keys.delete(ev.code);
     if (ev.code === 'KeyV') {
       if (down && !ev.repeat && !this.pttHeld) { this.pttHeld = true; this.deps.ptt('start'); }
@@ -264,6 +271,20 @@ export class DesktopControls {
 
   private applyRotation(): void {
     this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'));
+  }
+
+  /**
+   * Place the camera at `position` looking at `target` (world coordinates), no
+   * roll. Keeps yaw/pitch in sync so the fly controls continue from there.
+   */
+  lookFrom(position: { x: number; y: number; z: number }, target: { x: number; y: number; z: number }): void {
+    this.camera.position.set(position.x, position.y, position.z);
+    const dx = target.x - position.x, dy = target.y - position.y, dz = target.z - position.z;
+    if (dx * dx + dy * dy + dz * dz > 1e-12) {
+      this.yaw = Math.atan2(-dx, -dz);
+      this.pitch = THREE.MathUtils.clamp(Math.atan2(dy, Math.hypot(dx, dz)), -1.55, 1.55);
+    }
+    this.applyRotation();
   }
 
   /** Re-sync yaw/pitch after the camera was moved externally (e.g. leaving XR). */

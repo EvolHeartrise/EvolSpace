@@ -266,6 +266,9 @@ fake widget loader, runtime factory) are in `test/helpers.ts`.
 - Per frame, the client should call `setPointerRays(engine.rays())` (ray and
   cursor visuals) and `setHandFrames(frames)` (joint anchors), and report
   `rt.selected` in `user.pose.selected`.
+- Observers (the client's desktop debug UI) can use `onSceneChange(cb)` (after every applied
+  scene diff; read `sceneState`), `onSelectionChange`, `widgets.record(id)` (status/error/inputs)
+  and `links.lastOutput(entity, port)` (latest non-event output values).
 - The mirror can use `applySnapshot`/`applyPatch`, `whenIdle()` (wait for
   widget loads before a screenshot), `frameEntity(id)` and `sceneFromNet: false`.
 - The client should call `rt.setEnvironment({ grid: mode !== 'ar' })` whenever

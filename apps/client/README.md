@@ -26,6 +26,7 @@ URL parameters (`src/config.ts`):
 | `server=wss://host:port` | WebSocket base override (default: same origin `/ws`). `http(s)://` and bare `host:port` are accepted; `ws=` is an alias (the mirror's documented param) |
 | `fps=72\|90\|120`, `fbscale=1.2`, `foveation=0.5` | XR quality overrides |
 | `perf=1` | show the perf overlay at start |
+| `debug=1` | desktop debug dashboard (implies `role=desktop`); `/debug` redirects here — see "Debug mode" |
 
 Without WebXR (or with `role=desktop`) the page runs **desktop mode**:
 
@@ -44,10 +45,57 @@ The mouse hand is a synthesized `HandFrame` placed so the engine's
 shoulder→hand ray passes through the cursor, so desktop exercises exactly the
 same poses → bindings → actions pipeline as the headset.
 
+## Debug mode (desktop dashboard)
+
+`http://127.0.0.1:8787/debug` (or `https://<pc-ip>:8443/debug`, or `?debug=1` on any URL; also the
+"Debug mode →" link on the page panel). The server redirects `/debug` to `/?role=desktop&debug=1`
+keeping other params. It is desktop mode plus a 2D dashboard (Preact + `@preact/signals`, TSX,
+lazy-loaded from `src/debug/` — the headset bundle never contains it) docked around the 3D view:
+toolbar on top, tabbed left / right / bottom docks (drag edges to resize, collapse, drag tabs between
+docks, right-click a tab to move/close; layout persisted in localStorage `evolspace.debug.layout`).
+
+- `?debug=1` forces `role=desktop` (unless `role=mirror`): a debug tab **never requests or becomes
+  primary and never streams `user.pose`**, so it can't take over the headset's slot or change
+  `screenshot {view:'user'}`. Its hello adds the `user-pose` capability: the server forwards the
+  primary's pose (≤15 Hz, `ServerMessage {type:'user.pose'}`) for the dashboard.
+- The canvas is moved into the viewport cell and sized to it (`EvolClient.attachViewport`), so the
+  camera aspect and mouse→ray mapping (canvas rect) stay right. All desktop controls still work.
+- Keys: `` ` `` / F1 toggle the dashboard · F frame selection (Shift+F everything) · Delete remove · Ctrl+Z / Ctrl+Shift+Z /
+  Ctrl+Y undo/redo · Esc clear selection. Never while typing; keys typed into dashboard controls never
+  reach the fly camera / push-to-talk.
+- Panels: **Scene** (tree, filter, select/frame, eye/lock, context menu, drag to reparent keeping the
+  placement, error badges) and **Inspector** (name, widget + status/errors, transform with drag-to-scrub
+  fields, props generated from the manifest's PropSpecs, extra props as JSON, ports with live values,
+  links, parent/anchor/tags/visible/locked/interactions, raw JSON). Every edit is a scene op
+  (source `user`, one undo group per gesture). Stubs (other components fill them): widgets, hands,
+  view, links, channels, events, agent, sources, screenshots.
+
+### Extending it (contracts in `src/debug/types.ts`)
+
+```ts
+// panels/<id>.tsx (+ optional panels/<id>/…), listed once in panels/index.ts
+export default definePanel({ id, title, dock: 'left' | 'right' | 'bottom', order, icon?, component: ({ ctx }) => …,
+  init?(ctx) /* once at start: overlays, toolbar actions */, badge?(ctx) /* tab badge; '!3' = error style */ });
+registerOverlay({ id, title, defaultEnabled?, create(ctx) => ({ update?(dt, tMs), dispose() }) }); // 3D overlays (ctx.overlays toggles)
+registerToolbarAction({ id, title, icon?, order?, run(ctx), active?(ctx) });  // 'screenshot.myView' is a placeholder to replace
+```
+
+`ctx` (`DebugContext`): `client` (typed EvolClient port: `sim`, `command`, `onFrame`, `desktop`, …), `runtime`,
+`engine`, `net`, `THREE`, `scene`, `camera`, `renderer`, `api` (typed wrapper of every HTTP endpoint,
+`src/debug/api.ts`), `store` (signals: `conn`, `health`, `headset`, `scene`, `tree`, `catalog`,
+`widgetStatus`, `entityErrors`, `selection`, `selectedEntity`, `agentStatus`, `agentMessages`, `events`
+(long-polled ring buffer), `channels`/`sources` (polled only while `need('channels'|'sources')` is held —
+`useNeed(ctx, …)` in components), `userPose`, `workspaces`), `actions` (`select`, `frame`, `frameAll`, `ops`, `update`,
+`setProps`, `remove`, `duplicate`, `undo`, `redo`, `spawn` (≈1.2 m in front of the camera, facing it),
+`command`, `serverCommand`, `toast`, `newGroup`), `layout`, `overlays`, `toast`. Shared UI:
+`src/debug/ui/{kit,fields,menu,icons,format,hooks}`; CSS classes/variables in `src/debug/styles.ts`.
+`window.__evol.debug` is the context (tests, devtools).
+
 ## Test
 
 ```bash
-npx vitest run apps/client/test       # unit: space math, origin/anchors, resampler/PCM/PTT, recorder, router, sim, pose builder
+npx vitest run apps/client/test       # unit: space math, origin/anchors, resampler/PCM/PTT, recorder, router, sim, pose builder,
+                                      #   debug dashboard (store/api/layout/keys; Preact components under happy-dom)
 npx vitest run apps/client/test-e2e   # e2e (skips unless a server answers on EVOL_URL, default http://127.0.0.1:8787)
 npx tsc -p apps/client/tsconfig.json  # typecheck (src + tests)
 ```
@@ -104,6 +152,8 @@ src/user/pose-stream.ts UserPose builder (rounded), 30 Hz rate gate
 src/perf/overlay.ts    in-world fps/draw-call/triangle panel (CanvasTexture, head-locked)
 src/ui/landing.ts      2D page panel (status, Enter VR/AR, toggles, mic, help, toasts)
 src/ui/hud.ts          voice/recording/toast feedback → runtime SystemUi + page
+src/debug/             desktop debug dashboard (Preact, lazy): index.tsx entry, types.ts contracts,
+                       store.ts/api.ts/layout.ts/keyboard.ts/camera.ts/overlays.ts, shell/, ui/, panels/
 ```
 
 ## Design decisions

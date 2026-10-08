@@ -9,6 +9,8 @@ Architecture and contracts: `ARCHITECTURE.md` and `packages/protocol/src` (the t
 
 - Server: `npm run dev` (repo root) → http://127.0.0.1:8787 (local API), https://<LAN-IP>:8443 (headset; the
   startup log prints the URL). Run it in the background; it supervises `library/sources/*` (STT autostarts).
+- Debug dashboard (no headset needed): http://127.0.0.1:8787/debug — scene tree, inspector, live ports, … around the 3D
+  view; never takes the headset's primary slot. Details: `apps/client/README.md` "Debug mode".
 - Claude Code with voice: `pwsh scripts/claude.ps1` (sets `MCP_PROTOCOL_NEGOTIATION=legacy` and
   `--dangerously-load-development-channels server:evolspace`). Voice requests then arrive as
   `<channel source="evolspace" kind="voice" target=... selected=...>text</channel>` events.

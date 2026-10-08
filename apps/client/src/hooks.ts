@@ -29,6 +29,8 @@ export interface EvolHooks {
     command(name: string, args?: CommandArgs, phase?: CommandPhase): string;
   };
   state(): Record<string, unknown>;
+  /** Debug dashboard context (only with ?debug=1 / /debug, once it has started). */
+  debug?: import('./debug/types.ts').DebugContext;
 }
 
 declare global {

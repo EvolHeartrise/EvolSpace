@@ -20,6 +20,7 @@ import { WidgetLibrary } from './widgets/library.ts';
 import { DataBus } from './data/bus.ts';
 import { WsHub } from './ws/hub.ts';
 import { createHandlers } from './ws/handlers.ts';
+import { UserPoseFeed } from './ws/user-pose-feed.ts';
 import { AgentHub } from './agent.ts';
 import { CommandRegistry, registerBuiltinCommands } from './commands.ts';
 import { GestureLibrary } from './gestures/library.ts';
@@ -88,6 +89,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
       c.send({ type: 'gestures.defs', poses: g.poses, interactions: g.interactions });
       c.send({ type: 'agent.status', status: agent.status });
       for (const message of agent.recent().slice(-20)) c.send({ type: 'agent.message', message });
+      if (UserPoseFeed.wants(c) && user.latest) c.send({ type: 'user.pose', pose: user.latest });
       event('client.connect', { clientId: c.id, role: c.role, primary: c.primary, ...(c.userAgent ? { userAgent: c.userAgent } : {}) });
     },
     onText: (c, m) => handlers?.onText(c, m),
@@ -98,11 +100,12 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
       if (c.helloed) event('client.disconnect', { clientId: c.id, role: c.role });
     },
     onPrimaryChange: (now, prev) => {
-      if (prev && prev !== now) user.clear();
+      if (prev && prev !== now) { user.clear(); userPoseFeed.clear(); }
       log.info(`primary xr client: ${now ? now.id : 'none'}`);
     },
   });
   const broadcast = (m: ServerMessage) => { hub.broadcast(m); };
+  const userPoseFeed = new UserPoseFeed(hub);
 
   // ---------------------------------------------------------------- scene changed (coarse) events
   const lastChanged = new Map<string, { at: number; timer: NodeJS.Timeout | null }>();
@@ -245,7 +248,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
   const voice = (ov.createVoice ?? createVoice)(voiceDeps);
 
   services = {
-    config, log, events, store, workspaces, widgets, bus, hub, agent, commands, gestures, recorder, user, sources, voice,
+    config, log, events, store, workspaces, widgets, bus, hub, agent, commands, gestures, recorder, user, userPoseFeed, sources, voice,
     mirror, mirrorStatus: () => (mirrorInstance?.status ? mirrorInstance.status() : null), applyOps, agentAsk, event, baseUrl, vocabulary, paths,
     instantiatePrefab: async (id, opts, source = 'agent') => {
       const prefab = await loadPrefab(paths.prefabs, id);
@@ -374,6 +377,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     for (const st of lastChanged.values()) if (st.timer) clearTimeout(st.timer);
     events.close();
     recorder.close();
+    userPoseFeed.close();
     await Promise.allSettled([
       workspaces.flush().catch((e) => log.error(`final save failed: ${(e as Error).message}`)),
       sources.close(),

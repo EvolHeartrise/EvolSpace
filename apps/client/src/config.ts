@@ -10,6 +10,9 @@
 //   ?autoenter=vr|ar          request a session right away (works with emulate; real
 //                             browsers still need a gesture)
 //   ?perf=1                   show the perf overlay on start
+//   ?debug=1                  desktop debug dashboard (src/debug, lazy-loaded); implies role=desktop
+//                             unless role=mirror (a debug tab never requests primary or streams user.pose).
+//                             http://<server>/debug redirects to /?role=desktop&debug=1
 
 import type { ClientRole } from '@evolspace/protocol';
 import type { XrMode } from './xr/session.ts';
@@ -26,12 +29,16 @@ export interface ClientConfig {
   framebufferScale?: number;
   foveation?: number;
   perf: boolean;
+  /** Desktop debug dashboard (?debug=1 or /debug). Always role=desktop. */
+  debug: boolean;
 }
 
 export function parseConfig(loc: { search: string; protocol: string; host: string } = location): ClientConfig {
   const q = new URLSearchParams(loc.search);
   const roleParam = q.get('role');
-  const role: ClientConfig['role'] = roleParam === 'desktop' || roleParam === 'mirror' ? roleParam : 'xr';
+  const debug = q.get('debug') === '1' || q.get('debug') === 'true';
+  // Debug mode is a desktop dashboard: it must never take the headset's primary slot.
+  const role: ClientConfig['role'] = roleParam === 'mirror' ? 'mirror' : roleParam === 'desktop' || debug ? 'desktop' : 'xr';
   const num = (k: string) => {
     const v = q.get(k);
     const n = v == null ? NaN : Number(v);
@@ -59,6 +66,7 @@ export function parseConfig(loc: { search: string; protocol: string; host: strin
     framebufferScale: num('fbscale'),
     foveation: num('foveation'),
     perf: q.get('perf') === '1',
+    debug: debug && role === 'desktop',
   };
 }
 

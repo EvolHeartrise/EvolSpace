@@ -97,6 +97,9 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
 - **Channel echo:** a publisher that is subscribed to its own channel receives its
   value back (server is the source of truth). Send `capabilities: ['no-echo']` in
   `hello` to suppress echoes to the publishing client.
+- **`user-pose` capability** (the desktop debug dashboard): the primary's `user.pose` is forwarded to such clients as
+  `{type:'user.pose', pose}` (≤15 Hz, latest wins, also right after hello); `pose: null` when the primary leaves
+  (`src/ws/user-pose-feed.ts`). `GET /debug` redirects to `/?role=desktop&debug=1` (other query params kept).
 - Subscriptions accept exact names, `prefix.*` (anything below `prefix.`) and `*`.
   Subscribing delivers the current value immediately.
 - **Backpressure:** control messages are always queued. Channel values are

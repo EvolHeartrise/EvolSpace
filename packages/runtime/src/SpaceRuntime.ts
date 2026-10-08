@@ -116,6 +116,7 @@ export class SpaceRuntime {
   private _selected: string | null = null;
   private selectionListeners = new Set<(id: string | null) => void>();
   private gestureListeners = new Set<(g: GestureDefs) => void>();
+  private sceneListeners = new Set<(diff: SceneDiff) => void>();
   private _gestures: GestureDefs | null = null;
   private offs: Array<() => void> = [];
   private userSetAt = -Infinity;
@@ -301,6 +302,20 @@ export class SpaceRuntime {
     }
     this.reconciler.apply(diff);
     if (diff.linksChanged) this.links.setLinks(this.mirror.state.links);
+    for (const cb of [...this.sceneListeners]) {
+      try { cb(diff); } catch (err) { console.error('scene listener threw', err); }
+    }
+  }
+
+  /**
+   * Called after every applied, non-empty scene change (server snapshot/patch or
+   * local optimistic edit), once the three.js graph is updated. Read the new
+   * state from `sceneState` (entities are replaced immutably on change; the
+   * state object itself is mutated in place). Used by the desktop debug UI.
+   */
+  onSceneChange(cb: (diff: SceneDiff) => void): () => void {
+    this.sceneListeners.add(cb);
+    return () => { this.sceneListeners.delete(cb); };
   }
 
   get sceneState(): SceneState {

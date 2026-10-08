@@ -44,6 +44,7 @@ const CSS = `
 #evol-landing .dim{color:#8d99ab;font-size:12px}#evol-landing .err{color:#ff5d6c;font-size:12px}
 #evol-landing .notice{color:#ffb547;font-size:12px;margin:6px 0}
 #evol-landing details{margin-top:8px}#evol-landing summary{cursor:pointer;color:#8d99ab}
+#evol-landing a.link{color:#4cc3ff;text-decoration:none;font-weight:600}#evol-landing a.link:hover{text-decoration:underline}
 #evol-landing kbd{font:11px ui-monospace,monospace;background:#1a2230;border:1px solid #3b475a;border-radius:4px;padding:0 4px}
 #evol-landing.collapsed .body{display:none}
 #evol-listening{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:21;display:none;
@@ -89,6 +90,7 @@ export class LandingUi {
         <label><input type="checkbox" data-set="perfOverlay"> Perf overlay</label>
         <div class="dim" data-ref="origin"></div>
         <div class="dim" data-ref="emu"></div>
+        <div class="row"><a class="link" data-ref="debug" href="/debug" title="Desktop dashboard: scene tree, inspector, channels, events… (no headset needed)">Debug mode →</a></div>
         <details><summary>Desktop controls</summary><div class="dim" style="margin-top:6px">
           <kbd>RMB</kbd>-drag look · <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Q</kbd>/<kbd>E</kbd> down/up ·
           <kbd>Shift</kbd> fast · <kbd>MMB</kbd>/<kbd>Alt</kbd>+drag orbit · wheel dolly<br>
@@ -100,6 +102,9 @@ export class LandingUi {
     document.body.appendChild(this.el);
     this.el.querySelectorAll<HTMLElement>('[data-ref]').forEach((n) => { this.refs[n.dataset.ref!] = n; });
     if (!opts.showXrButtons) this.refs.xrRow.style.display = 'none';
+    // Keep a ?server= override when switching to debug mode (/debug keeps query params).
+    const server = new URLSearchParams(location.search).get('server');
+    if (server) (this.refs.debug as HTMLAnchorElement).href = `/debug?server=${encodeURIComponent(server)}`;
 
     this.refs.vr.addEventListener('click', () => actions.enter('vr'));
     this.refs.ar.addEventListener('click', () => actions.enter('ar'));
