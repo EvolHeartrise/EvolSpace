@@ -148,5 +148,146 @@
     ],
     "command": "channel.publish",
     "args": { "channel": "github.bsrl.ctl.show", "value": "$n" }
+  },
+  {
+    "id": "video-play",
+    "description": "Video: play / resume.",
+    "patterns": [
+      "(play|resume|unpause|continue)( the)?( video| playback)?"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "play"}}
+  },
+  {
+    "id": "video-pause",
+    "description": "Video: pause.",
+    "patterns": [
+      "pause( the)?( video| playback)?",
+      "(stop|hold)( the)? (video|playback)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "pause"}}
+  },
+  {
+    "id": "video-unmute",
+    "description": "Video: unmute.",
+    "patterns": [
+      "unmute( the)?( video| sound| audio)?",
+      "(sound|audio) on"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "unmute"}}
+  },
+  {
+    "id": "video-mute",
+    "description": "Video: mute.",
+    "patterns": [
+      "mute( the)?( video| sound| audio)?",
+      "(sound|audio) off"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "mute"}}
+  },
+  {
+    "id": "video-normal-speed",
+    "description": "Video: normal speed.",
+    "patterns": [
+      "(normal|regular|reset( the)?) speed",
+      "(set )?(the )?(playback |video )?speed( to)? (normal|regular|one)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "speed", "value": "normal"}}
+  },
+  {
+    "id": "video-faster",
+    "description": "Video: one speed step faster.",
+    "patterns": [
+      "(speed (it |the video )?up|faster|play faster)( please)?"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "faster"}}
+  },
+  {
+    "id": "video-slower",
+    "description": "Video: one speed step slower.",
+    "patterns": [
+      "(slow (it |the video )?down|slower|play slower)( please)?"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "slower"}}
+  },
+  {
+    "id": "video-speed",
+    "description": "Video: set playback speed (0.25–2), e.g. 'speed 1.5', 'play at 2x'.",
+    "patterns": [
+      "(set )?(the )?(playback |video )?speed( to)? (?<n>(?:\\d+(?: \\d+)?|zero|one|two|three|four|half|one and a half|one and a quarter|(?:zero|one|two) point (?:one|two|three|four|five|six|seven|eight|nine|\\d+)))(x| x| times)?",
+      "(play )?(at )?(?<n>(?:\\d+(?: \\d+)?|zero|one|two|three|four|half|one and a half|one and a quarter|(?:zero|one|two) point (?:one|two|three|four|five|six|seven|eight|nine|\\d+)))(x| x| times)( speed)?"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "speed", "value": "$n"}}
+  },
+  {
+    "id": "video-skip-seconds",
+    "description": "Video: skip ahead N seconds/minutes (default 10 s).",
+    "patterns": [
+      "(skip|jump|go|fast forward|move)( ahead| forward)?( by)? (?<n>\\d+|[a-z]+(?: [a-z]+)?) (seconds?|secs?)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "skip", "value": "$n:number"}}
+  },
+  {
+    "id": "video-skip-minutes",
+    "description": "Video: skip ahead N seconds/minutes (default 10 s).",
+    "patterns": [
+      "(skip|jump|go|fast forward|move)( ahead| forward)?( by)? (?<m>\\d+|[a-z]+(?: [a-z]+)?) (minutes?|mins?)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "skip", "value": "$m:number", "unit": "min"}}
+  },
+  {
+    "id": "video-skip",
+    "description": "Video: skip ahead N seconds/minutes (default 10 s).",
+    "patterns": [
+      "(skip|jump)( ahead| forward)|fast forward"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "skip", "value": 10}}
+  },
+  {
+    "id": "video-back-seconds",
+    "description": "Video: go back N seconds/minutes (default 10 s).",
+    "patterns": [
+      "(go back|rewind|back|jump back|skip back)( by)? (?<n>\\d+|[a-z]+(?: [a-z]+)?) (seconds?|secs?)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "back", "value": "$n:number"}}
+  },
+  {
+    "id": "video-back-minutes",
+    "description": "Video: go back N seconds/minutes (default 10 s).",
+    "patterns": [
+      "(go back|rewind|back|jump back|skip back)( by)? (?<m>\\d+|[a-z]+(?: [a-z]+)?) (minutes?|mins?)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "back", "value": "$m:number", "unit": "min"}}
+  },
+  {
+    "id": "video-back",
+    "description": "Video: go back N seconds/minutes (default 10 s).",
+    "patterns": [
+      "rewind|skip back|jump back"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "back", "value": 10}}
+  },
+  {
+    "id": "video-restart",
+    "description": "Video: restart from the beginning.",
+    "patterns": [
+      "(restart|start over|replay)( the)?( video)?",
+      "(go )?(back )?to the (start|beginning)( of the video)?"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "video.ctl", "value": {"cmd": "restart"}}
   }
 ]

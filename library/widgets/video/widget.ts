@@ -16,10 +16,12 @@ import { makeIcon, setIcon } from '../../shared/icons.ts';
 import { truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { toScalar } from '../../shared/tensor.ts';
+import { ChannelProp } from '../../shared/binding.ts';
 import { STYLE } from '../../shared/style.ts';
 
 interface Props extends Record<string, unknown> {
   url: string;
+  control: string;
   speed: number;
   width: number;
   autoplay: boolean;
@@ -34,6 +36,26 @@ interface MediaEntry { status: string; progress: number; src: string; title: str
 
 const BAR_H = 0.088;
 export const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
+/**
+ * A spoken speed after voice normalization ("1.5" arrives as "1 5"): "1 5", "1 point 5", "one point
+ * five", "2", "two", "one and a half", "half", "normal" → number (NaN if not understood).
+ */
+export function parseSpeed(s: unknown): number {
+  if (typeof s === 'number') return s;
+  if (typeof s !== 'string') return NaN;
+  const W: Record<string, string> = { zero: '0', one: '1', two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', to: '2', too: '2' };
+  let t = s.toLowerCase().replace(/\b(x|times|speed)\b/g, ' ').trim().replace(/\s+/g, ' ');
+  if (t === 'normal' || t === 'regular') return 1;
+  if (t === 'half' || t === 'a half') return 0.5;
+  t = t.replace(/\b(zero|one|two|three|four|five|six|seven|eight|nine|to|too)\b/g, (w) => W[w]);
+  const half = /^(\d+) and a half$/.exec(t);
+  if (half) return Number(half[1]) + 0.5;
+  const quarter = /^(\d+) and a quarter$/.exec(t);
+  if (quarter) return Number(quarter[1]) + 0.25;
+  const m = /^(\d+)(?:(?: point| dot)? (\d+))?$/.exec(t) ?? /^(\d+)\.(\d+)$/.exec(t);
+  return m ? Number(m[2] ? `${m[1]}.${m[2]}` : m[1]) : NaN;
+}
 
 /** The next speed step up/down from `cur` (snaps an off-list speed to the list). */
 export function stepSpeed(cur: number, dir: 1 | -1): number {
@@ -72,6 +94,7 @@ const definition: WidgetDefinition<Props> = {
     volume: { type: 'number', default: 1, min: 0, max: 1, step: 0.05, description: 'Volume.' },
     showControls: { type: 'boolean', default: true, description: 'Control bar under the screen.' },
     prefix: { type: 'string', default: 'video', description: "Channel prefix of the 'video' source (<prefix>.request / <prefix>.media)." },
+    control: { type: 'channel', default: 'video.ctl', description: "Command channel ({cmd: play|pause|toggle|mute|unmute|faster|slower|speed|skip|seek|restart|load, value?, unit?}); the voice fast path ('pause video', 'speed 1.5', 'skip ahead 30 seconds') publishes here." },
   },
   inputs: {
     url: { type: 'string', description: 'Load this URL.' },
@@ -369,8 +392,40 @@ const definition: WidgetDefinition<Props> = {
       seekTo(Math.min(1, Math.max(0, (v3.x + sw / 2) / sw)) * v.duration);
     }
 
+    /** A command from the control channel (voice fast path, other widgets, Claude). */
+    function command(c: unknown): void {
+      if (!c || typeof c !== 'object') return;
+      const o = c as { cmd?: unknown; value?: unknown; unit?: unknown };
+      const v = video;
+      const n = Number(o.value);
+      switch (o.cmd) {
+        case 'play': if (v && (v.paused || v.ended)) play(); break;
+        case 'pause': v?.pause(); break;
+        case 'toggle': click('btn:play'); return;
+        case 'mute': case 'unmute': {
+          const m = o.cmd === 'mute';
+          if (!ctx.isMirror && m !== !!ctx.props.muted) ctx.setProps({ muted: m });
+          if (v) { v.muted = m || ctx.isMirror; if (!m) blocked = false; }
+          break;
+        }
+        case 'faster': case 'slower': setSpeed(stepSpeed(speed, o.cmd === 'faster' ? 1 : -1), true); return;
+        case 'speed': { const x = parseSpeed(o.value); if (x > 0) setSpeed(x, true); return; }
+        case 'skip': if (v && Number.isFinite(n)) seekTo(v.currentTime + n * (o.unit === 'min' ? 60 : 1)); break;
+        case 'back': if (v && Number.isFinite(n)) seekTo(v.currentTime - n * (o.unit === 'min' ? 60 : 1)); break;
+        case 'seek': if (Number.isFinite(n)) seekTo(n * (o.unit === 'min' ? 60 : 1)); break;
+        case 'restart': if (v) { seekTo(0); play(); } break;
+        case 'load': if (typeof o.value === 'string' && !ctx.isMirror) ctx.setProps({ url: o.value }); break;
+        default: return;
+      }
+      paint();
+    }
+
     build();
     load(url);
+    // commands: only new ones (the value already on the channel at subscribe time is history)
+    let subscribing = true;
+    const control = new ChannelProp(ctx, (c) => { if (!subscribing) command(c); }, 'control');
+    subscribing = false;
 
     return {
       onProps(p, prev) {
@@ -381,6 +436,7 @@ const definition: WidgetDefinition<Props> = {
           if (p.muted !== prev.muted) v.muted = muted();
         }
         if (p.speed !== prev.speed) setSpeed(Number(p.speed), false);
+        if (p.control !== prev.control) { subscribing = true; control.refresh(); subscribing = false; }
         if (p.width !== prev.width || p.showControls !== prev.showControls) build();
         if (p.url !== prev.url || p.prefix !== prev.prefix) load(String(p.url ?? ''));
         paint();
@@ -415,6 +471,7 @@ const definition: WidgetDefinition<Props> = {
         if (video && src && !message && video.readyState >= 2 && screenMat?.map === null) paint();
       },
       dispose() {
+        control.dispose();
         offMedia?.();
         if (video) { video.pause(); video.removeAttribute('src'); video.load(); }
         texture?.dispose();

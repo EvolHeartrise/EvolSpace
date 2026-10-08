@@ -148,6 +148,67 @@ describe('library/voice/commands.json', () => {
   });
 });
 
+describe('library/voice/commands.json: video + github fast paths', () => {
+  const parsed = parseCommands(JSON.parse(readFileSync(libraryFile, 'utf8')));
+  const run = (t: string) => {
+    const m = matchCommand(t, parsed.commands);
+    if (!m) return null;
+    return { id: m.command.def.id, args: substituteArgs(m.command.def.args, { groups: m.groups, entities: {}, text: m.text, transcript: t }) };
+  };
+  const video = (t: string) => {
+    const r = run(t);
+    return r && r.args?.channel === 'video.ctl' ? r.args.value : r ? `other:${r.id}` : null;
+  };
+
+  it.each<[string, unknown]>([
+    ['Play Video.', { cmd: 'play' }],
+    ['Resume', { cmd: 'play' }],
+    ['Pause.', { cmd: 'pause' }],
+    ['Pause the video please', { cmd: 'pause' }],
+    ['Stop the video', { cmd: 'pause' }],
+    ['Mute.', { cmd: 'mute' }],
+    ['Unmute the video', { cmd: 'unmute' }],
+    ['Speed it up', { cmd: 'faster' }],
+    ['Slow down', { cmd: 'slower' }],
+    ['Normal speed', { cmd: 'speed', value: 'normal' }],
+    ['Set speed to 1.5', { cmd: 'speed', value: '1 5' }],
+    ['Speed 2x', { cmd: 'speed', value: '2' }],
+    ['Play at 1.25x', { cmd: 'speed', value: '1 25' }],
+    ['Playback speed one point five', { cmd: 'speed', value: 'one point five' }],
+    ['Skip ahead 30 seconds', { cmd: 'skip', value: 30 }],
+    ['Jump forward thirty seconds', { cmd: 'skip', value: 30 }],
+    ['Skip ahead two minutes', { cmd: 'skip', value: 2, unit: 'min' }],
+    ['Skip ahead', { cmd: 'skip', value: 10 }],
+    ['Fast forward', { cmd: 'skip', value: 10 }],
+    ['Go back 15 seconds', { cmd: 'back', value: 15 }],
+    ['Rewind 1 minute', { cmd: 'back', value: 1, unit: 'min' }],
+    ['Rewind', { cmd: 'back', value: 10 }],
+    ['Restart the video', { cmd: 'restart' }],
+    ['Go back to the beginning', { cmd: 'restart' }],
+  ])('%s → %j', (text, expected) => {
+    expect(video(text)).toEqual(expected);
+  });
+
+  it.each([
+    'Please play the newest 3Blue1Brown YouTube video.',
+    'Please add controls to change the video playback speed.',
+    'How many times did it fail?',
+    'Click.',
+    'Stop',
+  ])('%s → Claude (no fast path)', (text) => {
+    expect(run(text)).toBeNull();
+  });
+
+  it("keeps 'go back' as undo", () => {
+    expect(run('Go back')?.id).toBe('undo');
+  });
+
+  it('github: show issue / PR numbers', () => {
+    expect(run('Show me issue number 10.')?.args).toEqual({ channel: 'github.bsrl.ctl.show', value: '10' });
+    expect(run('PR 62')?.args).toEqual({ channel: 'github.bsrl.ctl.show', value: '62' });
+  });
+});
+
 describe('context + substitution', () => {
   const ctx = {
     focus: { right: { entity: 'e-right', point: [0, 0, 0] as [number, number, number] }, left: { entity: 'e-left', point: [0, 0, 0] as [number, number, number] } },
