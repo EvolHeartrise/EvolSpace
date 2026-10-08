@@ -36,6 +36,7 @@ import { sceneRoutes } from './routes/scene.ts';
 import { widgetRoutes } from './routes/widgets.ts';
 import { channelRoutes } from './routes/channels.ts';
 import { systemRoutes } from './routes/system.ts';
+import { mediaRoutes } from './routes/media.ts';
 import { atomicWrite } from './util/fs.ts';
 import { startMirror, type Mirror, type MirrorDeps } from './mirror/index.ts';
 import { createVoice, type VoiceDeps, type VoiceService } from './voice/index.ts';
@@ -293,6 +294,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
   widgetRoutes(router, services);
   channelRoutes(router, services);
   systemRoutes(router, services);
+  mediaRoutes(router, services);
 
   let client: ClientApp | null = null;
   // Browser requests from foreign origins are refused (see http/origin.ts): the API can
