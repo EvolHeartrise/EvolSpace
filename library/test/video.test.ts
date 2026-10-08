@@ -1,6 +1,6 @@
 // video — URL routing (fetch via the video source vs. play directly), time format, the no-DOM fallback.
 import { expect, it } from 'vitest';
-import video, { clock, needsFetch, stepSpeed } from '../widgets/video/widget.ts';
+import video, { clock, needsFetch, parseSpeed, stepSpeed } from '../widgets/video/widget.ts';
 import { mount } from './harness.ts';
 
 it('fetches remote links through the video source, plays same-origin paths directly', () => {
@@ -60,4 +60,35 @@ it('steps playback speed through 0.25×–2× with the − / + buttons and persi
   expect(h.root.getObjectByName('icon:play')).toBeTruthy(); // Lucide icons in the bar
   expect(h.root.getObjectByName('icon:volume-2')).toBeTruthy();
   h.dispose();
+});
+
+it('understands spoken speeds (as voice normalization delivers them)', () => {
+  expect(parseSpeed('1 5')).toBe(1.5);
+  expect(parseSpeed('1 25')).toBe(1.25);
+  expect(parseSpeed('one point five')).toBe(1.5);
+  expect(parseSpeed('two')).toBe(2);
+  expect(parseSpeed('one and a half')).toBe(1.5);
+  expect(parseSpeed('half')).toBe(0.5);
+  expect(parseSpeed('normal')).toBe(1);
+  expect(parseSpeed('banana')).toBeNaN();
+});
+
+it('takes commands from the control channel (the voice fast path), but not the one already there', async () => {
+  const h = await mount(video, { url: '/media/x.mp4' });
+  h.publish('video.ctl', { cmd: 'speed', value: '1 5' });
+  h.frame();
+  expect(h.rec.setProps.at(-1)).toEqual({ speed: 1.5 });
+  h.publish('video.ctl', { cmd: 'faster' });
+  expect(h.rec.setProps.at(-1)).toEqual({ speed: 1.75 });
+  h.publish('video.ctl', { cmd: 'mute' });
+  expect(h.rec.setProps.at(-1)).toEqual({ muted: true });
+  h.publish('video.ctl', { cmd: 'nonsense' });
+  h.publish('video.ctl', 'junk' as never);
+  expect(h.rec.errors).toEqual([]);
+  h.dispose();
+
+  const h2 = await mount(video, { url: '/media/x.mp4' }, { channels: { 'video.ctl': { cmd: 'speed', value: '2' } } });
+  h2.frame();
+  expect(h2.rec.setProps).toEqual([]); // history is not replayed
+  h2.dispose();
 });
