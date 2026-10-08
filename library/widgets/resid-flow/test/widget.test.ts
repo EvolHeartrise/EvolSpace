@@ -372,11 +372,11 @@ describe('resid-flow picking & feedback (hardening)', () => {
     pushSample(f, generateSample(0, { layers: 10, heads: 4 }));
     f.push('interp.lens.readout', { layer: 10, token: 28, title: 't', items: [{ label: 'agrees with final CLS answer', value: 1 }, { label: 'x', value: 0.5 }] });
     tick(w);
-    expect(w.view.readout.width).toBeGreaterThan(0.32);
-    expect(f.ui.texts.some((t) => t.text.startsWith('agrees with final CL'))).toBe(true);
+    expect(w.view.readout.width).toBeGreaterThan(0.4);
+    expect(f.ui.texts.some((t) => t.text.startsWith('agrees with final CLS answer\n'))).toBe(true);
     f.push('interp.lens.readout', { layer: 10, token: 28, title: 't', items: [{ label: ' Paris', value: 0.7 }] });
     tick(w);
-    expect(w.view.readout.width).toBeCloseTo(0.32, 6);
+    expect(w.view.readout.width).toBeLessThan(0.34);
   });
 });
 

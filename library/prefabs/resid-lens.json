@@ -1,5 +1,5 @@
 {
-  "description": "Residual-stream lens rig: a resid-flow visualizer (channels interp.*) with a vertical layer slider beside the stack (knob aligned with the layer planes for 11 layers; set its max to L when the model differs) and a sample slider below. Dragging the layer slider moves the lens live and publishes interp.ctl.layer on release; both sliders follow interp.ctl.layer / interp.ctl.sample (so picks in the visualizer, voice and Claude move them). Set the sample slider's max to meta.sample.total - 1. Placed ~1 m in front of the origin at standing height.",
+  "description": "Residual-stream lens rig: a resid-flow visualizer (channels interp.*) with a vertical layer slider beside the stack (length = stack height, so its ticks line up with the layer planes) and a sample slider below. Both sliders take their range from the data: interp.meta → layer-slider.max (x.layers.length - 1) and sample-slider.max (x.sample.total - 1). Dragging the layer slider moves the lens live and publishes interp.ctl.layer on release (commit); the sample slider publishes interp.ctl.sample on release. Both follow interp.ctl.layer / interp.ctl.sample (picks in the visualizer, voice, Claude, the producer) and persist what they receive. The sliders never emit on create (emitOnCreate false) and only 'commit' reaches the channels, so loading the scene on any client never overwrites interp.ctl.*. Placed ~1 m in front of the origin at standing height.",
   "entities": [
     {
       "id": "resid",
@@ -27,9 +27,10 @@
         "value": 10,
         "orientation": "vertical",
         "length": 0.8,
-        "decimals": 0
+        "decimals": 0,
+        "emitOnCreate": false
       },
-      "transform": { "position": [-0.42, 0, 0.3], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "transform": { "position": [-0.47, 0, 0.3], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
       "tags": ["interp"]
     },
     {
@@ -44,7 +45,8 @@
         "step": 1,
         "value": 0,
         "length": 0.4,
-        "decimals": 0
+        "decimals": 0,
+        "emitOnCreate": false
       },
       "transform": { "position": [0, -0.48, 0.32], "rotation": [-0.2588, 0, 0, 0.9659], "scale": [1, 1, 1] },
       "tags": ["interp"]
@@ -54,7 +56,9 @@
     { "from": { "kind": "port", "entity": "layer-slider", "port": "value" }, "to": { "kind": "port", "entity": "resid", "port": "layer" } },
     { "from": { "kind": "port", "entity": "layer-slider", "port": "commit" }, "to": { "kind": "channel", "channel": "interp.ctl.layer" } },
     { "from": { "kind": "channel", "channel": "interp.ctl.layer" }, "to": { "kind": "port", "entity": "layer-slider", "port": "value" } },
+    { "from": { "kind": "channel", "channel": "interp.meta" }, "to": { "kind": "port", "entity": "layer-slider", "port": "max" }, "transform": "x && Array.isArray(x.layers) && x.layers.length > 1 ? x.layers.length - 1 : undefined" },
     { "from": { "kind": "port", "entity": "sample-slider", "port": "commit" }, "to": { "kind": "channel", "channel": "interp.ctl.sample" } },
-    { "from": { "kind": "channel", "channel": "interp.ctl.sample" }, "to": { "kind": "port", "entity": "sample-slider", "port": "value" } }
+    { "from": { "kind": "channel", "channel": "interp.ctl.sample" }, "to": { "kind": "port", "entity": "sample-slider", "port": "value" } },
+    { "from": { "kind": "channel", "channel": "interp.meta" }, "to": { "kind": "port", "entity": "sample-slider", "port": "max" }, "transform": "x && x.sample && x.sample.total > 0 ? x.sample.total - 1 : undefined" }
   ]
 }

@@ -189,6 +189,14 @@ export class Reconciler {
     applyTransform(node.object, t);
   }
 
+  /** Drop a local preview now and show the entity's scene transform. */
+  clearPreview(id: string): void {
+    if (!this.previews.delete(id)) return;
+    const e = this.mirror.entity(id);
+    const n = this.nodes.get(id);
+    if (e && n) applyTransform(n.object, e.transform);
+  }
+
   hasPreview(id: string): boolean {
     return this.previews.has(id);
   }

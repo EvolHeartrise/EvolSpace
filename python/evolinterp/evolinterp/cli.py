@@ -68,15 +68,21 @@ def cmd_capture(args: argparse.Namespace) -> int:
     cache, _ = load_or_capture(a, force=args.force, log=_log)
     m = cache.mask.astype(bool)
     _log(f"saved to {model_dir(a) / 'capture.npz'}")
-    _log("layer  mean|resid|   (writes of the block producing it: |attn|  |mlp|)")
+    pj = cache.projector.describe()
+    _log(f"projection: normalized={pj['normalized']} basis={pj['basis']} explained_variance="
+         f"{', '.join(f'{x:.1%}' for x in pj['explained_variance'])}")
+    _log("layer  mean|resid|  proj radius   (writes of the block producing it: |attn|  |mlp|)")
+    radius = np.linalg.norm(cache.proj, axis=-1)
     for li, lab in enumerate(a.layer_labels):
-        nm = cache.norm[:, li][m[:, li]].mean() if m[:, li].any() else float("nan")
+        ok = m[:, li]
+        nm = cache.norm[:, li][ok].mean() if ok.any() else float("nan")
+        rad = radius[:, li][ok].mean() if ok.any() else float("nan")
         if li == 0:
-            _log(f"{lab:6s} {nm:11.2f}")
+            _log(f"{lab:6s} {nm:11.2f} {rad:12.3f}")
             continue
-        aw = cache.delta[:, li - 1, 0][m[:, li]].mean()
-        mw = cache.delta[:, li - 1, 1][m[:, li]].mean()
-        _log(f"{lab:6s} {nm:11.2f}   {aw:39.2f} {mw:6.2f}")
+        aw = cache.delta[:, li - 1, 0][ok].mean()
+        mw = cache.delta[:, li - 1, 1][ok].mean()
+        _log(f"{lab:6s} {nm:11.2f} {rad:12.3f}   {aw:39.2f} {mw:6.2f}")
     return 0
 
 

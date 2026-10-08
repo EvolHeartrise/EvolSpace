@@ -72,8 +72,9 @@ class Adapter(ABC):
 
     kind: str                         # "bsrl" | "toy"
     model_id: str                     # cache-dir key (stable for a given checkpoint/config)
-    model_name: str                   # human label for P.meta.model
-    checkpoint: str | None = None
+    model_name: str                   # human label for P.meta.model (never a filesystem path)
+    short_name: str = ""              # compact label for P.meta.short_name (e.g. "BSRL bend7 · upd 7000")
+    checkpoint: str | None = None     # filesystem path -> P.meta.checkpoint
     n_layers: int                     # L (blocks)
     n_heads: int
     d_model: int
@@ -167,7 +168,8 @@ class Adapter(ABC):
         return self.model_id
 
     def describe(self) -> dict[str, Any]:
-        return {"kind": self.kind, "model": self.model_name, "checkpoint": self.checkpoint,
+        return {"kind": self.kind, "model": self.model_name, "short_name": self.short_name or self.model_name,
+                "checkpoint": self.checkpoint,
                 "layers": self.n_layers, "heads": self.n_heads, "d_model": self.d_model,
                 "tokens": self.n_tokens, "samples": self.num_samples()}
 

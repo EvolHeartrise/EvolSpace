@@ -23,6 +23,12 @@ export interface PickSource {
   nodeObject(id: string): THREE.Object3D | undefined;
   content(id: string): THREE.Object3D | null;
   interactives(id: string): ReadonlySet<THREE.Object3D> | undefined;
+  /**
+   * Is this registered interactive still part of the entity's content? (The
+   * source may drop detached ones from its registry.) Default: a parent walk
+   * up to content(id).
+   */
+  isLiveInteractive?(id: string, o: THREE.Object3D): boolean;
   /** Declared widget size, used when content has no geometry yet. */
   sizeHint(id: string): Vec3 | undefined;
 }
@@ -185,8 +191,10 @@ export class Picker {
       let cand: Candidate = { id, dist: d, precise: false, interactive: false, point: _c1.copy(_q), volume };
       const inter = this.src.interactives(id);
       if (inter && inter.size) {
+        const content = this.src.content(id);
         for (const o of inter) {
-          if (!effectivelyVisible(o)) continue;
+          // Skip parts the widget detached (rebuilt): their stale matrices would give phantom touches.
+          if (!this.liveInteractive(id, o, content) || !effectivelyVisible(o)) continue;
           _box.setFromObject(o);
           if (_box.isEmpty()) continue;
           _box.clampPoint(_wp, _q2);
@@ -203,6 +211,13 @@ export class Picker {
       }
     }
     return best ? this.toHit(best) : null;
+  }
+
+  private liveInteractive(id: string, o: THREE.Object3D, content: THREE.Object3D | null): boolean {
+    if (this.src.isLiveInteractive) return this.src.isLiveInteractive(id, o);
+    if (!content) return false;
+    for (let cur: THREE.Object3D | null = o; cur; cur = cur.parent) if (cur === content) return true;
+    return false;
   }
 
   private toHit(c: Candidate): Hit {
@@ -257,7 +272,11 @@ function findInteractive(o: THREE.Object3D, set: ReadonlySet<THREE.Object3D>, st
 /** Precise raycast that skips invisible subtrees (three's Raycaster does not). */
 function collectIntersections(o: THREE.Object3D, rc: THREE.Raycaster, out: THREE.Intersection[]): void {
   if (!o.visible) return;
-  if ((o as THREE.Mesh).geometry) {
+  const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+  if (g) {
+    // three's raycast trusts cached bounding spheres; drop them if the data changed.
+    if (g.attributes?.position) syncGeometry(g);
+    if ((o as THREE.InstancedMesh).isInstancedMesh) syncInstanced(o as THREE.InstancedMesh);
     try { o.raycast(rc, out); } catch { /* malformed geometry: ignore */ }
   }
   const ch = o.children;
@@ -271,19 +290,10 @@ function computeLocalBounds(node: THREE.Object3D, content: THREE.Object3D | null
   _inv2.copy(node.matrixWorld).invert();
   const visit = (o: THREE.Object3D) => {
     if (!o.visible) return;
-    const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
-    if (g && g.attributes?.position) {
-      if (!g.boundingBox) g.computeBoundingBox();
-      if (g.boundingBox && !g.boundingBox.isEmpty()) {
-        _m.multiplyMatrices(_inv2, o.matrixWorld);
-        if ((o as THREE.InstancedMesh).isInstancedMesh) {
-          const im = o as THREE.InstancedMesh;
-          if (!im.boundingBox) im.computeBoundingBox();
-          if (im.boundingBox) out.union(_box2.copy(im.boundingBox).applyMatrix4(_m));
-        } else {
-          out.union(_box2.copy(g.boundingBox).applyMatrix4(_m));
-        }
-      }
+    const b = objectBox(o);
+    if (b) {
+      _m.multiplyMatrices(_inv2, o.matrixWorld);
+      out.union(_box2.copy(b).applyMatrix4(_m));
     }
     for (let i = 0; i < o.children.length; i++) visit(o.children[i]);
   };
@@ -292,12 +302,84 @@ function computeLocalBounds(node: THREE.Object3D, content: THREE.Object3D | null
 
 function expandWorld(o: THREE.Object3D, out: THREE.Box3): void {
   if (!o.visible) return;
-  const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
-  if (g && g.attributes?.position) {
-    if (!g.boundingBox) g.computeBoundingBox();
-    if (g.boundingBox && !g.boundingBox.isEmpty()) out.union(_box2.copy(g.boundingBox).applyMatrix4(o.matrixWorld));
-  }
+  const b = objectBox(o);
+  if (b) out.union(_box2.copy(b).applyMatrix4(o.matrixWorld));
   for (let i = 0; i < o.children.length; i++) expandWorld(o.children[i], out);
+}
+
+/**
+ * Fresh object-local bounds of a mesh-like object (null: nothing to bound).
+ * An InstancedMesh uses its own boundingBox (all instances); anything else
+ * its geometry's.
+ */
+export function objectBox(o: THREE.Object3D): THREE.Box3 | null {
+  const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+  if (!g || !g.attributes?.position) return null;
+  syncGeometry(g);
+  if ((o as THREE.InstancedMesh).isInstancedMesh) {
+    const im = o as THREE.InstancedMesh;
+    syncInstanced(im);
+    if (!im.boundingBox) im.computeBoundingBox();
+    return im.boundingBox && !im.boundingBox.isEmpty() ? im.boundingBox : null;
+  }
+  if (!g.boundingBox) g.computeBoundingBox();
+  return g.boundingBox && !g.boundingBox.isEmpty() ? g.boundingBox : null;
+}
+
+// Cached bounds are only trusted while the data they were computed from is
+// unchanged: a widget that rewrites a position attribute (needsUpdate → version
+// bump, or a new attribute) or moves instances invalidates them. Stamps are
+// per object, so this is a WeakMap lookup and a few compares.
+interface GeoStamp { pos: unknown; ver: number }
+interface InstStamp { geo: number; mat: number; count: number }
+const geoStamps = new WeakMap<THREE.BufferGeometry, GeoStamp>();
+const instStamps = new WeakMap<THREE.InstancedMesh, InstStamp>();
+let geoEpoch = 0;
+const geoEpochs = new WeakMap<THREE.BufferGeometry, number>();
+
+function attrVersion(a: THREE.BufferAttribute | THREE.InterleavedBufferAttribute): number {
+  return (a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute
+    ? (a as THREE.InterleavedBufferAttribute).data.version
+    : (a as THREE.BufferAttribute).version;
+}
+
+/** Drop a geometry's cached bounds if its position data changed since they were computed. */
+export function syncGeometry(g: THREE.BufferGeometry): void {
+  const pos = g.attributes.position;
+  if (!pos) return;
+  const ver = attrVersion(pos);
+  const st = geoStamps.get(g);
+  if (!st) {
+    geoStamps.set(g, { pos, ver });
+    geoEpochs.set(g, ++geoEpoch);
+    return;
+  }
+  if (st.pos === pos && st.ver === ver) return;
+  st.pos = pos;
+  st.ver = ver;
+  g.boundingBox = null;
+  g.boundingSphere = null;
+  geoEpochs.set(g, ++geoEpoch);
+}
+
+/** Drop an InstancedMesh's cached bounds if instances or the geometry changed. */
+function syncInstanced(im: THREE.InstancedMesh): void {
+  const geo = geoEpochs.get(im.geometry) ?? 0;
+  const mat = im.instanceMatrix.version;
+  const count = im.count;
+  const st = instStamps.get(im);
+  if (!st) {
+    // A box computed before we started tracking may predate setMatrixAt calls.
+    instStamps.set(im, { geo, mat, count });
+    im.boundingBox = null;
+    return;
+  }
+  if (st.geo === geo && st.mat === mat && st.count === count) return;
+  st.geo = geo;
+  st.mat = mat;
+  st.count = count;
+  im.boundingBox = null;
+  im.boundingSphere = null;
 }
 
 function padThin(b: THREE.Box3, min: number): void {

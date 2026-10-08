@@ -18,6 +18,7 @@ import {
 import { composePose, fovFromProjection, transformDirection, jointPose, clonePose, type Pose } from './math/space.ts';
 import { XrSessionManager, type XrMode } from './xr/session.ts';
 import { SpaceOrigin } from './xr/origin.ts';
+import { EnvironmentPolicy } from './xr/environment.ts';
 import { XrHandReader } from './xr/hands.ts';
 import { installEmulation } from './xr/emulate.ts';
 import { DesktopControls } from './desktop/controls.ts';
@@ -43,6 +44,8 @@ export class EvolClient {
   host!: InteractionHost;
   router!: CommandRouter;
   xr!: XrSessionManager;
+  /** Floor grid off in AR (passthrough), restored afterwards. */
+  private environment!: EnvironmentPolicy;
   readonly origin = new SpaceOrigin(undefined, (l, m) => this.log(l, m));
   readonly sim = new SimHands((spec) => input.synthHand(spec), (f) => input.pinchPoint(f));
   desktop: DesktopControls | null = null;
@@ -164,11 +167,13 @@ export class EvolClient {
   }
 
   private initXr(): void {
+    this.environment = new EnvironmentPolicy(this.runtime);
     const s = this.settings.value;
     this.xr = new XrSessionManager(this.renderer, {
       onStart: (session, mode) => {
         this.cancelInteractions();
         this.origin.onSessionStart(session);
+        this.environment.onSessionStart(mode);
         this.settings.set({ lastMode: mode });
         if (this.desktop) this.desktop.enabled = false;
         this.sceneBackground = this.scene.background;
@@ -180,6 +185,7 @@ export class EvolClient {
         // Grabs / held commands (e.g. push-to-talk) must not outlive the hands that drove them.
         this.cancelInteractions();
         this.origin.onSessionEnd();
+        this.environment.onSessionEnd();
         for (const k of Object.keys(this.realHands) as Handedness[]) delete this.realHands[k];
         this.scene.background = this.sceneBackground ?? new THREE.Color('#0b0f15');
         this.renderer.setClearAlpha(1);

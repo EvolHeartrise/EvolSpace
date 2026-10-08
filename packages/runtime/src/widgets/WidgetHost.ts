@@ -44,6 +44,12 @@ export interface WidgetRecord {
   fallback: THREE.Object3D | null;
   /** Values received on input ports (persist across re-creates). */
   inputs: Map<string, unknown>;
+  /**
+   * Momentary inputs (from `event` outputs, or into `event` inputs) that
+   * arrived while no instance was ready: delivered once to the next instance,
+   * never replayed again (a re-create must not re-fire an old button press).
+   */
+  pendingEvents: Array<[string, unknown]>;
   /** Bumped on every (re)instantiation/removal; stale async work checks it. */
   generation: number;
 }
@@ -72,6 +78,8 @@ interface CachedDefinition {
   hash: string;
   promise: Promise<WidgetDefinition>;
 }
+
+const MAX_PENDING_EVENTS = 16;
 
 const nativeImport: ModuleLoader = (url) => import(/* @vite-ignore */ url);
 
@@ -167,6 +175,7 @@ export class WidgetHost {
       content: null,
       fallback: null,
       inputs: new Map(),
+      pendingEvents: [],
       generation: 0,
     };
     this.records.set(e.id, rec);
@@ -299,9 +308,16 @@ export class WidgetHost {
     rec.error = null;
     content.visible = true;
     this.deps.onContentChanged?.(rec.entityId);
-    // Replay inputs that arrived before (or across) this instance.
+    // Replay inputs that arrived before (or across) this instance. Momentary
+    // (event) inputs are not stored; those that arrived while nothing was
+    // ready are delivered once.
+    const events = rec.pendingEvents.splice(0);
     if (typeof inst.onInput === 'function') {
       for (const [port, v] of rec.inputs) {
+        if (rec.instance !== inst) break;
+        this.guard(rec, 'onInput', () => inst.onInput!(port, v));
+      }
+      for (const [port, v] of events) {
         if (rec.instance !== inst) break;
         this.guard(rec, 'onInput', () => inst.onInput!(port, v));
       }
@@ -395,12 +411,27 @@ export class WidgetHost {
 
   // ------------------------------------------------------------------ dataflow & interaction
 
-  deliverInput(entity: string, port: string, value: unknown): void {
+  /**
+   * A linked input received a value. `info.momentary` marks values from an
+   * `event`-typed output; those (and values into `event`-typed inputs) are
+   * delivered but not kept for replay on re-create.
+   */
+  deliverInput(entity: string, port: string, value: unknown, info?: { momentary: boolean }): void {
     const rec = this.records.get(entity);
     if (!rec) return;
-    rec.inputs.set(port, value);
     const inst = rec.instance;
-    if (rec.status === 'ready' && inst && typeof inst.onInput === 'function') {
+    const ready = rec.status === 'ready' && !!inst;
+    const momentary = !!info?.momentary || this.manifests.get(rec.widgetId)?.inputs?.[port]?.type === 'event';
+    if (momentary) {
+      if (!ready) {
+        rec.pendingEvents.push([port, value]);
+        if (rec.pendingEvents.length > MAX_PENDING_EVENTS) rec.pendingEvents.shift();
+        return;
+      }
+    } else {
+      rec.inputs.set(port, value);
+    }
+    if (ready && inst && typeof inst.onInput === 'function') {
       this.guard(rec, 'onInput', () => inst.onInput!(port, value));
     }
   }
@@ -447,6 +478,16 @@ export class WidgetHost {
 
   interactivesOf(entity: string): ReadonlySet<THREE.Object3D> | undefined {
     return this.records.get(entity)?.state?.interactives;
+  }
+
+  /**
+   * True if `o` is a registered interactive of the entity's live instance that
+   * is still under its content root. Interactives a widget detached (rebuild)
+   * are dropped from the registry.
+   */
+  isLiveInteractive(entity: string, o: THREE.Object3D): boolean {
+    const rec = this.records.get(entity);
+    return !!rec?.state && rec.state.isLiveInteractive(o, rec.content);
   }
 
   /** Content object of an entity (widget root or fallback), excluding child entities. */

@@ -11,8 +11,11 @@
 //                      see library/prefabs/resid-lens.json)
 
 import type { InteractionEvent, WidgetContext, WidgetInstance } from '@evolspace/protocol';
-import { allDirty, cleanDirty, DATA_KEYS, displayToken, InterpData, type DataKey, type Dirty } from './data.ts';
-import { buildArcs, buildLayout, buildTicks, buildTrajectories, emptyRibbons, resolveInto, resolvePoint, type Layout, type PickSlot, type RibbonBuffers, type TickBuffers } from './layout.ts';
+import { allDirty, cleanDirty, DATA_KEYS, displayToken, fitText, InterpData, type DataKey, type Dirty } from './data.ts';
+import {
+  buildArcs, buildLayout, buildTicks, buildTrajectories, emptyRibbons, NORMALIZE_MODES, resolveInto, resolvePoint,
+  type Layout, type NormalizeMode, type PickSlot, type RibbonBuffers, type TickBuffers,
+} from './layout.ts';
 import { computeNodeColors, type ColorBy } from './colors.ts';
 import { HANDLE_NAME, NODE_PICK_RADIUS, ResidView, themeColors, type Style } from './view.ts';
 
@@ -21,7 +24,7 @@ export interface ResidProps {
   width: number;
   height: number;
   layerSpacing: number;
-  normalize: 'global' | 'layer';
+  normalize: NormalizeMode;
   depthJitter: number;
   tokenFilter: unknown;
   colorBy: ColorBy;
@@ -409,7 +412,7 @@ export class ResidFlow implements WidgetInstance {
     this.layout = buildLayout(data, {
       width: Math.max(0.05, num(p.width, 0.6)),
       spacing,
-      normalize: p.normalize === 'layer' ? 'layer' : 'global',
+      normalize: (NORMALIZE_MODES as readonly string[]).includes(p.normalize as string) ? p.normalize : 'auto',
       depthJitter: Math.max(0, num(p.depthJitter, 0)),
       tokenVisible: filter ? (t) => filter.has(data.tokenGroup(t) ?? '') : undefined,
     }, this.layout ?? undefined);
@@ -481,12 +484,14 @@ export class ResidFlow implements WidgetInstance {
       return;
     }
     const m = d.meta;
-    const title = m?.model ? `${m.model}${m.checkpoint ? ` · ${m.checkpoint}` : ''}` : 'residual stream';
+    // Prefer the producer's short name; the full model string (often a checkpoint path) is
+    // cut to one line by the view. The checkpoint itself is not shown (meta has it).
+    const title = m?.short_name || m?.model || 'residual stream';
     const parts: string[] = [];
-    if (m?.sample) parts.push(`sample ${m.sample.index + 1}/${m.sample.total}${m.sample.label ? ` · ${m.sample.label}` : ''}`);
-    parts.push(`${d.T} tokens × ${d.L1} layers`);
+    if (m?.sample) parts.push(`sample ${m.sample.index + 1}/${m.sample.total}${m.sample.label ? ` · ${fitText(m.sample.label, 40)}` : ''}`);
     const l = this.lensLayer, t = this.selectedToken;
     parts.push(`lens ${d.layerLabel(l)}${t >= 0 ? ` · ${displayToken(d.tokenLabel(t))} #${t}` : ''}`);
+    parts.push(`${d.T} tokens × ${d.L1} layers${m?.proj?.normalized ? ' · unit-norm proj' : ''}`);
     const status: string[] = [];
     for (const key of ['meta', 'resid.norm', 'resid.mask', 'resid.delta', 'attn'] as const) {
       if (key === 'attn' && !bool(this.ctx.props.showAttn, true)) continue; // not subscribed
@@ -498,7 +503,8 @@ export class ResidFlow implements WidgetInstance {
       const s = d.status('probe');
       if (s !== 'ok') status.push(`probe '${this.ctx.props.probe || '?'}': ${s}`);
     }
-    this.view.setHeader(title, parts.join('   '), status.join(' · '));
+    // ' | ' between groups: troika collapses runs of spaces, so a plain gap read as one sentence.
+    this.view.setHeader(title, parts.join(' | '), status.join(' · '));
   }
 
   private waitingText(): string {

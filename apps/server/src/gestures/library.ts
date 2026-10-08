@@ -1,7 +1,11 @@
 // Gesture definitions: library/poses/*.json (PoseDef) and
 // library/interactions/*.json (InteractionSet), validated and hot-reloaded.
 // Invalid files are reported in `errors` (and logged) and skipped, so one bad
-// edit doesn't take every other gesture down.
+// edit doesn't take every other gesture down. Files that load but look wrong
+// (unknown feature names, bad binding hand values, ... — checked with
+// @evolspace/input's validators when available) are reported in `warnings`.
+// Every reload calls onLoad (app.ts records a 'gestures.load' event) so the
+// agent sees typos right after editing a file.
 import path from 'node:path';
 import { existsSync, mkdirSync, promises as fsp } from 'node:fs';
 import { watch, type FSWatcher } from 'chokidar';
@@ -9,12 +13,17 @@ import type { InteractionSet, PoseDef } from '@evolspace/protocol';
 import { readJson } from '../util/fs.ts';
 import { debounce } from '../util/timing.ts';
 import type { Logger } from '../log.ts';
+import type { InputModule } from './input.ts';
+
+export type GestureValidators = Pick<InputModule, 'validatePoseDef' | 'validateInteractionSet'>;
 
 export interface GestureDefs {
   poses: PoseDef[];
   interactions: Record<string, InteractionSet>;
-  /** file (relative to library/) → problem */
+  /** file (relative to library/) → problem (the file was skipped, or for dangling pose refs, loaded anyway) */
   errors: Record<string, string>;
+  /** file (relative to library/) → non-fatal problems (the file is loaded); likely typos. */
+  warnings: Record<string, string[]>;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -58,10 +67,19 @@ export function validateInteractionSet(s: unknown): InteractionSet {
 export class GestureLibrary {
   readonly posesDir: string;
   readonly interactionsDir: string;
-  private defs: GestureDefs = { poses: [], interactions: {}, errors: {} };
+  private defs: GestureDefs = { poses: [], interactions: {}, errors: {}, warnings: {} };
   private watcher: FSWatcher | null = null;
 
-  constructor(private readonly opts: { libraryDir: string; log: Logger; onChange?: (d: GestureDefs) => void; watch?: boolean }) {
+  constructor(private readonly opts: {
+    libraryDir: string;
+    log: Logger;
+    onChange?: (d: GestureDefs) => void;
+    /** After every (re)load, including the initial one. */
+    onLoad?: (d: GestureDefs) => void;
+    /** @evolspace/input validators (lazy; null/rejection = skip the extra checks). */
+    validators?: () => Promise<GestureValidators | null>;
+    watch?: boolean;
+  }) {
     this.posesDir = path.join(opts.libraryDir, 'poses');
     this.interactionsDir = path.join(opts.libraryDir, 'interactions');
   }
@@ -97,9 +115,44 @@ export class GestureLibrary {
       const missing = [...new Set(set.bindings.map((b) => b.pose).filter((p) => !poseIds.has(p)))];
       if (missing.length) errors[`interactions/${name}.json`] = `references unknown pose(s): ${missing.join(', ')}`;
     }
+    const warnings = await this.lint(poses, interactions, errors);
     for (const [f, msg] of Object.entries(errors)) this.opts.log.warn(`${f}: ${msg}`);
-    this.defs = { poses, interactions, errors };
+    for (const [f, list] of Object.entries(warnings)) for (const w of list) this.opts.log.warn(`${f}: ${w}`);
+    this.defs = { poses, interactions, errors, warnings };
+    try { this.opts.onLoad?.(this.defs); } catch (e) { this.opts.log.error(`gestures onLoad failed: ${(e as Error).message}`); }
     return this.defs;
+  }
+
+  /** Extra checks with @evolspace/input's validators on the loaded (normalized) definitions. */
+  private async lint(poses: PoseDef[], interactions: Record<string, InteractionSet>, errors: Record<string, string>): Promise<Record<string, string[]>> {
+    const warnings: Record<string, string[]> = {};
+    let v: GestureValidators | null = null;
+    try { v = (await this.opts.validators?.()) ?? null; } catch { v = null; }
+    if (!v) return warnings;
+    const add = (file: string, list: string[]) => {
+      const fresh = list.filter((w) => !errors[file]?.includes(w));
+      if (fresh.length) warnings[file] = [...(warnings[file] ?? []), ...fresh];
+    };
+    if (typeof v.validatePoseDef === 'function') {
+      for (const p of poses) {
+        try {
+          const r = v.validatePoseDef(p, p.id);
+          add(`poses/${p.id}.json`, [...r.errors, ...r.warnings]);
+        } catch (e) { add(`poses/${p.id}.json`, [`validator failed: ${(e as Error).message}`]); }
+      }
+    }
+    if (typeof v.validateInteractionSet === 'function') {
+      const poseIds = poses.map((p) => p.id);
+      for (const [name, set] of Object.entries(interactions)) {
+        const file = `interactions/${name}.json`;
+        try {
+          const r = v.validateInteractionSet(set, poseIds);
+          // Dangling pose references are already reported in `errors`.
+          add(file, [...r.errors, ...r.warnings].filter((w) => !(errors[file] && /does not exist in library\/poses/.test(w))));
+        } catch (e) { add(file, [`validator failed: ${(e as Error).message}`]); }
+      }
+    }
+    return warnings;
   }
 
   async close(): Promise<void> { await this.watcher?.close(); }

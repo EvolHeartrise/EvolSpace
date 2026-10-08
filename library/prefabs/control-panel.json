@@ -1,5 +1,5 @@
 {
-  "description": "Example control panel: a titled panel with two sliders (Gain, Threshold), an Enabled toggle and a Reset button. Port→channel links publish every control to the data bus (ui.control.gain / .threshold / .enabled / .reset) for Python or any other consumer; port→port links make Reset put both sliders back to their defaults (link transforms return constants). Re-point the channels by editing the links after spawning.",
+  "description": "Example control panel: a titled panel with two sliders (Gain, Threshold), an Enabled toggle and a Reset button. Port→channel links publish every control to the data bus (ui.control.gain / .threshold / .enabled / .reset) for Python or any other consumer; port→port links make Reset put both sliders back to their defaults (link transforms return constants). Re-point the channels by editing the links after spawning. The sliders set emitOnCreate (they are the only writers of their channels and persist their value, so publishing it on load is safe; never do that for a channel other writers share).",
   "entities": [
     {
       "id": "panel",
@@ -15,7 +15,7 @@
       "parent": "panel",
       "name": "gain",
       "widget": "slider",
-      "props": { "label": "Gain", "min": 0, "max": 2, "step": 0.01, "value": 1 },
+      "props": { "label": "Gain", "min": 0, "max": 2, "step": 0.01, "value": 1, "emitOnCreate": true },
       "transform": { "position": [0, 0.065, 0.004], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
       "visible": true
     },
@@ -24,7 +24,7 @@
       "parent": "panel",
       "name": "threshold",
       "widget": "slider",
-      "props": { "label": "Threshold", "min": 0, "max": 1, "step": 0.05, "value": 0.5, "color": "secondary" },
+      "props": { "label": "Threshold", "min": 0, "max": 1, "step": 0.05, "value": 0.5, "color": "secondary", "emitOnCreate": true },
       "transform": { "position": [0, -0.025, 0.004], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
       "visible": true
     },

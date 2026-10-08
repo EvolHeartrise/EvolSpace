@@ -94,6 +94,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     onBinary: (c, b) => handlers?.onBinary(c, b),
     onClose: (c) => {
       recorder.onDisconnect(c.id);
+      try { voice.onDisconnect?.(c.id); } catch (e) { log.warn(`voice.onDisconnect failed: ${(e as Error).message}`); }
       if (c.helloed) event('client.disconnect', { clientId: c.id, role: c.role });
     },
     onPrimaryChange: (now, prev) => {
@@ -138,6 +139,9 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
       sceneChanged(version, source, ops.length);
     },
     onReset: (scene) => broadcast({ type: 'scene.snapshot', scene }),
+    // Undo deleting prop keys / save-as renaming the workspace: clients diff snapshots, so
+    // re-sending the scene only touches what actually changed.
+    onResync: (scene) => broadcast({ type: 'scene.snapshot', scene }),
     onChange: () => workspaces?.markDirty(),
   });
   workspaces = new Workspaces(config.dataDir, store, log.child('workspace'), ov.workspaceDebounceMs);
@@ -156,6 +160,15 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     log: log.child('gestures'),
     watch: config.watch,
     onChange: (d) => broadcast({ type: 'gestures.defs', poses: d.poses, interactions: d.interactions }),
+    // Like widget.build: every (re)load is recorded so Claude sees file problems/typos.
+    onLoad: (d) => event('gestures.load', {
+      ok: Object.keys(d.errors).length === 0 && Object.keys(d.warnings).length === 0,
+      poses: d.poses.length,
+      interactions: Object.keys(d.interactions).length,
+      ...(Object.keys(d.errors).length ? { errors: d.errors } : {}),
+      ...(Object.keys(d.warnings).length ? { warnings: d.warnings } : {}),
+    }),
+    validators: () => input().catch(() => null),
   });
   const input = ov.loadInput ?? loadInput;
   const user = new UserState(input);
@@ -212,6 +225,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     agentAsk,
     say: (text, kind) => { agent.say(text, kind); },
     setAgentStatus: (state, detail) => { agent.setStatus(state, detail); },
+    agentStatus: () => agent.status,
     send: (id, m) => hub.send(id, m),
     broadcast,
     event,
@@ -262,6 +276,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     say: (text, kind) => { agent.say(text, kind ?? 'info'); },
     restartSource: (id) => sources.restart(id),
     rebuildWidget: (id) => widgets.build(id),
+    publish: (channel, value, o) => ({ seq: bus.publish(channel, value, o).seq }),
   });
 
   // ---------------------------------------------------------------- load library + scene

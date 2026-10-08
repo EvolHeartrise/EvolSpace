@@ -13,7 +13,7 @@ import { checkDefinition } from './lint.ts';
 import { mount, tensor } from './harness.ts';
 
 const LIBRARY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const NOT_OURS = new Set(['resid-flow']);
+const NOT_OURS = new Set<string>();
 const IDS = readdirSync(path.join(LIBRARY, 'widgets'), { withFileTypes: true })
   .filter((d) => d.isDirectory() && !NOT_OURS.has(d.name) && existsSync(path.join(LIBRARY, 'widgets', d.name, 'widget.ts')))
   .map((d) => d.name)

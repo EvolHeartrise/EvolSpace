@@ -14,12 +14,13 @@ python/evolinterp/
   evolinterp/adapters/bsrl.py   BeatSaberRL loader + instrumented re-implementation of _forward_stacked
   evolinterp/adapters/toy.py    toy task + model (trains in ~15 s, cached)
   evolinterp/interventions.py   intervention spec (JSON) shared by CLI / live / Python
-  evolinterp/capture.py         dataset-wide capture, shared PCA basis, capture.npz cache
+  evolinterp/capture.py         dataset-wide capture, shared PCA basis (RMS-normalized residuals), capture.npz cache
   evolinterp/probes.py          per-layer sklearn logistic-regression probes
   evolinterp/sae.py             sparse autoencoders + automatic feature labels
   evolinterp/session.py         InterpSession: per-sample views, lens readouts, payloads
   evolinterp/contract.py        channel names, payload builder, validator
   evolinterp/live.py            the live source process
+  evolinterp/lease.py           one live process per prefix (P.status owner + heartbeat)
   evolinterp/cli.py             python -m evolinterp ...
 ```
 
@@ -51,13 +52,32 @@ As a supervised source (the normal way; `autostart: false`):
 
 `{python:python/evolinterp}` is the server's placeholder for this folder's
 `.venv` interpreter (apps/server/src/sources/process.ts `resolvePython`);
-`cwd` is `../../../python/evolinterp` relative to the source folder. Both use
-prefix `interp`, so run one at a time (`POST /api/sources/interp-toy/stop`
-first). Start: MCP sources tool, `curl -X POST http://127.0.0.1:8787/api/sources/interp-bsrl/start`,
+`cwd` is `../../../python/evolinterp` relative to the source folder. Both
+sources also pass `--source <id>`.
+
+**One process per prefix.** Both use prefix `interp`. Every `P.status` a live
+process publishes carries `owner: {id, pid, host, source, model, prefix, since}` and
+`ts`, re-published every 5 s (heartbeat, `evolinterp/lease.py`). A starting process
+reads `P.status` first; if another owner is active (different id, `state` not
+`stopped`, heartbeat younger than 20 s, and — on this host — its pid still alive) it
+**refuses before loading anything**: it prints
+`refusing to start source interp-bsrl: channel prefix 'interp.*' is already served by source interp-toy (...); stop it first (POST /api/sources/interp-toy/stop) or use another --prefix`
+to stderr (visible in `GET /api/sources/<id>` `logTail` and the `source.exit`
+event), asks the server to stop its own source (`--source`, so `restart: true`
+does not loop), and exits with code 3. It never writes `P.status`, so the owner's
+status stays intact. Restarting the owner itself works: the supervisor kills the old
+process (`taskkill /F`), its pid is dead, so the successor takes over at once. A clean
+exit publishes `state: "stopped"`. Two processes started within the same ~0.5 s are
+settled by the heartbeat: the later claim yields (stderr, exit 3) and the earlier one
+republishes everything. So: stop one interp source before starting the other
+(`POST /api/sources/interp-toy/stop`), or run the second with another `--prefix`.
+
+Start: MCP sources tool, `curl -X POST http://127.0.0.1:8787/api/sources/interp-bsrl/start`,
 or `Client().source("interp-bsrl", "start")`. Logs: `GET /api/sources/interp-bsrl`.
 
 Startup: first run captures all activations (~15 s for BSRL's 2048 samples)
-into `data/interp/<model_id>/capture.npz` and trains probes in a background
+into `data/interp/<model_id>/capture.npz` (format v2; older caches — raw-residual
+projection — are ignored and recaptured automatically) and trains probes in a background
 thread (~1–2 min; published when done). Later starts take ~2 s. SAEs found in
 `data/interp/<model_id>/sae-<layer>.pt` are loaded automatically.
 
@@ -70,7 +90,7 @@ python -m evolinterp probe     --model bsrl               # train probes, print 
 python -m evolinterp sae-train --model bsrl --layer b5 [--features 768 --l1 3e-3 --steps 3000]
 python -m evolinterp info      --model bsrl --sample 5 --layer 6 --token 8   # tokens + readout in the terminal
 python -m evolinterp publish   --model bsrl --sample 5 --ablate '[{"op":"head","layer":8,"head":1}]'  # one-shot
-python -m evolinterp live      --model toy  [--prefix interp --rate 4 --probes auto|load|off --threads 4]
+python -m evolinterp live      --model toy  [--prefix interp --rate 4 --probes auto|load|off --threads 4 --source ID]
 ```
 
 `--model toy` works everywhere; `--dataset obs.npy` (N×630) replaces the
@@ -80,8 +100,8 @@ checkpoint's `diag_probe_obs` for BSRL.
 
 | Channel | Produced from |
 |---|---|
-| `P.meta` | layers `embed, b0..b{L-1}`; tokens decoded from the observation (`label`, `group`, extra `detail`); `sample.label`; `lens`; extras: `heads`, `interventions` (human summary), `probes` |
-| `P.resid.proj` f32 [L+1,T,3] | residual − global mean, projected on the top-3 PCs of **all** meaningful residuals of the dataset (all layers, one basis), scaled so the 99th-percentile radius is 1; masked positions = 0 |
+| `P.meta` | `model` — readable name, never a filesystem path (BSRL: `BeatSaberRL NotePolicy · bend7_cd1000 · upd 7000 (leaf from upd 6000) · 10L d192 h4`; toy: `toy red-majority transformer (3L d64 h4)`); `short_name` — compact label for titles (`BSRL bend7 · upd 7000`, `toy red-majority · 3L d64`); `checkpoint` — the path (BSRL `.pt`, toy weights cache); layers `embed, b0..b{L-1}`; tokens decoded from the observation (`label`, `group`, extra `detail`); `sample.label`; `lens`; `proj` — `{normalized: true, basis: "pca", explained_variance: [3 ratios]}`; extras: `heads`, `interventions` (human summary), `probes` |
+| `P.resid.proj` f32 [L+1,T,3] | each residual vector divided by its RMS (`r / sqrt(mean(r²))` — the model reads the stream through pre-LN anyway), minus the global mean of the normalized vectors, projected on the top-3 PCs of **all** meaningful normalized residuals of the dataset (all layers, one basis), scaled so the 99th-percentile radius is 1; masked positions = 0. Direction only: magnitudes live in `P.resid.norm`. Without the normalization the basis was dominated by the late layers (norms grow ~7× with depth) and early layers collapsed onto the centre |
 | `P.resid.norm` f32 [L+1,T] | ‖residual‖ (0 where masked) |
 | `P.resid.delta` f32 [L,2,T] | ‖attention write‖, ‖MLP write‖ of block l (after interventions) |
 | `P.resid.mask` u8 [L+1,T] | 1 = computed and not padding. BSRL: padding entity slots = 0 at every layer; the final block computes only the 5 lead tokens, so layer L entity tokens = 0 |
@@ -93,8 +113,9 @@ checkpoint's `diag_probe_obs` for BSRL.
 | `P.ctl.layer/token/sample/play` (in) | layer index 0..L (0 = embed), token 0..T−1, sample (wraps), play = bool, Hz, or a string of either (`"on"`, `"off"`, `"2"`; voice commands substitute strings) |
 
 Extensions (additive, same prefix): `P.ctl.ablate` (in: intervention list),
-`P.status` ({state: loading|training-probes|ready|error, message, sample,
-layer, token, play, interventions, probes, saes}), `P.probe.info` (classes,
+`P.status` ({state: loading|training-probes|ready|error|stopped, message, model,
+short_name, model_id, sample, layer, token, play, interventions, probes, saes, pid,
+owner, ts}; re-published every 5 s as the prefix lease heartbeat), `P.probe.info` (classes,
 descriptions, accuracy, baseline), `P.sae.index` (layer labels with an SAE),
 `P.sae.<layer>.top` ({layer, token, sample, features: [{id, act, label, freq}],
 stats}).
@@ -117,7 +138,8 @@ intervention, non-finite or |scale| > 1e6) is ignored and reported on
 reported the same way and the loop keeps serving (a crash would make the
 supervisor restart the source into the same control values). Non-finite
 numbers in JSON payloads (extreme ablations) are published as `null`. The
-next successful sample publish resets the status to `ready`.
+status returns to `ready` with the next successful publish that follows a control
+change (a reconnect or heartbeat republish of the same state keeps the error visible).
 
 ### Lens
 
@@ -195,9 +217,11 @@ block index or label (`"b3"`).
   cut direction from (cos, sin) lanes 6/7 binned to U/UR/R/DR/D/DL/L/UL or
   `dot`, kind flags (bomb 8, chain link 10, wall 14), and time-to-hit =
   (z − head z offset)/speed exactly as `_note_geo` computes t_plane (unclipped).
-- Residual norms grow ~7× through depth (≈110 → 770); the shared PCA basis is
-  therefore dominated by late layers and early-layer points sit near the
-  centre. The logit lens on early layers is off-distribution for the trunk
+- Residual norms grow ~7× through depth (≈110 → 770). `P.resid.proj` therefore
+  projects RMS-normalized vectors (mean radius per layer ≈ 0.9 embed, 0.37–0.6
+  b0..b9 instead of early layers collapsing to the centre; explained variance of
+  the 3 PCs ≈ 20 %, 14 %, 10 %); read magnitudes from `P.resid.norm`
+  (`python -m evolinterp capture` prints both per layer). The logit lens on early layers is off-distribution for the trunk
   (no final LN) — read "agrees with final"/KL rather than raw confidences.
 - Probes are trained on entity tokens only (lead tokens show NaN). Held-out
   split is by sample. Current leaf (upd 7000): colour/cutdir/kind ≈100 % up to
@@ -225,8 +249,17 @@ cd python/evolinterp
   server restart (data republished, lost controls re-seeded from the current
   state), compute errors reported without killing the loop, extreme
   interventions staying JSON-safe.
+- `test_toy.py` also: `P.meta` names (`short_name`, no path in `model`) and
+  `meta.proj`, per-vector scale invariance of the projection, stale v1 capture
+  caches recaptured. `test_bsrl.py`: BSRL names, early layers not collapsed.
+- `test_lease.py` — prefix lease: active-owner rules (stopped / stale heartbeat /
+  dead pid / remote host), refusal message, release never clobbering a successor,
+  heartbeat race resolution, `live.main` refusing a taken prefix with exit code 3
+  without touching `P.status`.
 - `test_integration.py` — real server (random port) supervising
-  `library/sources/interp-toy` → contract channels → controls → stop.
+  `library/sources/interp-toy` → contract channels → controls; starting
+  `interp-bsrl` meanwhile is refused (log message, self-stopped, not restarted, owner
+  untouched); restarting `interp-toy` takes the prefix over → stop.
 
 ## Design notes
 

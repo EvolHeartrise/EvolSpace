@@ -1,12 +1,12 @@
 {
-  "description": "A slider with a live numeric read-out to its right (slider.value → number.value, a port→port link evaluated on the headset). Grab the slider's frame to move both. Override props via ids 'slider' and 'readout'.",
+  "description": "A slider with a live numeric read-out to its right (slider.value → number.value, a port→port link evaluated on the headset). Grab the slider's frame to move both. The slider sets emitOnCreate so the read-out shows the initial value. Override props via ids 'slider' and 'readout'.",
   "entities": [
     {
       "id": "slider",
       "parent": null,
       "name": "slider",
       "widget": "slider",
-      "props": { "label": "Value", "min": 0, "max": 10, "step": 0.1, "value": 5 },
+      "props": { "label": "Value", "min": 0, "max": 10, "step": 0.1, "value": 5, "emitOnCreate": true },
       "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
       "visible": true
     },

@@ -27,11 +27,13 @@ import { RuntimeInteractionHost } from './interaction/RuntimeInteractionHost.ts'
 import type { InteractionHost, PointerRays } from './interaction/types.ts';
 import { LinkEngine } from './links/LinkEngine.ts';
 import type { NetPort } from './net/types.ts';
+import { passiveNetPort } from './net/passive.ts';
 import { Reconciler } from './scene/Reconciler.ts';
 import { isEmptyDiff, SceneMirror, type SceneDiff } from './scene/SceneMirror.ts';
 import { SceneWriter } from './scene/SceneWriter.ts';
 import { SystemUi } from './system/SystemUi.ts';
 import { createTheme, SYSTEM_STYLE } from './theme.ts';
+import { createFloorGrid } from './scene/FloorGrid.ts';
 import { BoundsOutline } from './ui/BoundsOutline.ts';
 import { configureTroika, preloadFonts, troikaTextFactory } from './ui/troika.ts';
 import { RuntimeUiKit, type TextFactory } from './ui/UiKit.ts';
@@ -58,6 +60,19 @@ export interface SpaceRuntimeOptions {
   widgetBaseUrl?: string;
   /** Show system UI (orb, panel, toasts…). Default: !isMirror. */
   systemUi?: boolean;
+  /**
+   * Show the floor grid + origin marker at the space origin. Default: true
+   * when the scene comes from the net (headset, mirror space view), false for
+   * local scenes (the mirror studio draws its own floor). The client turns it
+   * off in AR with setEnvironment({ grid: false }).
+   */
+  grid?: boolean;
+}
+
+/** Local environment settings (per client, never sent to the server). */
+export interface RuntimeEnvironment {
+  /** Floor grid + origin marker. */
+  grid: boolean;
 }
 
 export interface GestureDefs {
@@ -86,6 +101,12 @@ export class SpaceRuntime {
   readonly picker: Picker;
   readonly pointer: PointerVisuals;
   readonly writer: SceneWriter;
+  /**
+   * Floor grid + origin marker; toggle with setEnvironment. It is a child of
+   * the scene (not of root, so it never counts toward bounds computed over
+   * root) and follows root's world transform every update().
+   */
+  readonly floorGrid: THREE.LineSegments;
 
   private readonly net: NetPort;
   private readonly scene: THREE.Scene;
@@ -103,11 +124,13 @@ export class SpaceRuntime {
   private rootInv = new THREE.Matrix4();
 
   constructor(opts: SpaceRuntimeOptions) {
-    this.net = opts.net;
     this.scene = opts.scene;
     this.camera = opts.camera;
     this.role = opts.role;
     this.isMirror = opts.isMirror ?? opts.role === 'mirror';
+    // A mirror is a passive observer: widget side effects (scene ops, events,
+    // publishes, agent requests, commands, pose events) never leave it.
+    this.net = this.isMirror ? passiveNetPort(opts.net) : opts.net;
     this.sceneFromNet = opts.sceneFromNet !== false;
     this.theme = createTheme(opts.theme);
 
@@ -140,10 +163,14 @@ export class SpaceRuntime {
     this.writer = new SceneWriter(scenePort, (ops) => this.applyLocalOps(ops));
 
     this.links = new LinkEngine({
-      deliverInput: (entity, port, value) => this.widgets.deliverInput(entity, port, value),
+      deliverInput: (entity, port, value, info) => this.widgets.deliverInput(entity, port, value, info),
       publish: (channel, value) => this.channels.publish(channel, value),
       subscribe: (channel, cb) => this.channels.subscribe(channel, cb),
       reportError: (message, d) => this.reportError(message, undefined, d.entity),
+      outputType: (entity, port) => {
+        const e = this.mirror.entity(entity);
+        return e ? this.widgets.manifest(e.widget)?.outputs?.[port]?.type : undefined;
+      },
     });
 
     this.widgets = new WidgetHost({
@@ -183,11 +210,16 @@ export class SpaceRuntime {
       nodeObject: (id) => this.reconciler.node(id)?.object,
       content: (id) => this.widgets.contentOf(id),
       interactives: (id) => this.widgets.interactivesOf(id),
+      isLiveInteractive: (id, o) => this.widgets.isLiveInteractive(id, o),
       sizeHint: (id) => {
         const e = this.mirror.entity(id);
         return e ? this.widgets.manifest(e.widget)?.size : undefined;
       },
     });
+
+    this.floorGrid = createFloorGrid(this.theme);
+    this.floorGrid.visible = opts.grid ?? this.sceneFromNet;
+    this.scene.add(this.floorGrid);
 
     this.pointer = new PointerVisuals(this.theme);
     this.root.add(this.pointer.group);
@@ -338,6 +370,20 @@ export class SpaceRuntime {
     this.pointer.setRays(rays);
   }
 
+  // ------------------------------------------------------------------ environment
+
+  get environment(): RuntimeEnvironment {
+    return { grid: this.floorGrid.visible };
+  }
+
+  /**
+   * Local environment settings. The client calls this on session mode changes:
+   * `{ grid: mode !== 'ar' }` (the grid would cover the passthrough floor).
+   */
+  setEnvironment(env: Partial<RuntimeEnvironment>): void {
+    if (typeof env.grid === 'boolean') this.floorGrid.visible = env.grid;
+  }
+
   // ------------------------------------------------------------------ interaction & commands
 
   interactionHost(): InteractionHost {
@@ -382,8 +428,15 @@ export class SpaceRuntime {
       // Selecting the selected entity again toggles it off.
       this.select(target && target === this._selected ? null : target);
     });
-    this.commands.register('agent.panel.toggle', (_a, phase) => {
-      if (phase === 'start') this.system.togglePanel();
+    this.commands.register('agent.panel.toggle', (args, phase) => {
+      if (phase !== 'start') return;
+      // {visible: true|false} shows/hides ("show the Claude panel" must never hide it); absent → toggle.
+      if (typeof args?.visible === 'boolean') this.system.setPanelVisible(args.visible);
+      else this.system.togglePanel();
+    });
+    this.commands.register('grid.toggle', (args, phase) => {
+      if (phase !== 'start') return;
+      this.setEnvironment({ grid: typeof args?.visible === 'boolean' ? args.visible : !this.floorGrid.visible });
     });
     this.commands.register('agent.panel.scroll', (args, phase) => {
       if (phase === 'start') this.system.panel.scroll(typeof args?.delta === 'number' ? args.delta : 1);
@@ -417,7 +470,23 @@ export class SpaceRuntime {
     this.system.update(dt, this.headPos, this.headQuat);
     this.pointer.update(this.headPos, !this.isMirror);
     this.updateOutlines();
+    this.syncFloorGrid();
     this.ui.flush();
+  }
+
+  private syncFloorGrid(): void {
+    const g = this.floorGrid;
+    if (!g.visible) return;
+    this.root.updateWorldMatrix(true, false);
+    const parent = g.parent;
+    if (parent) {
+      // grid.matrix = parent⁻¹ · root (world): the grid sits exactly on the space origin.
+      parent.updateWorldMatrix(true, false);
+      g.matrix.copy(parent.matrixWorld).invert().multiply(this.root.matrixWorld);
+    } else {
+      g.matrix.copy(this.root.matrixWorld);
+    }
+    g.matrixWorldNeedsUpdate = true;
   }
 
   private updateHead(tMs: number): void {
@@ -475,6 +544,9 @@ export class SpaceRuntime {
     this.system.dispose();
     this.pointer.dispose();
     this.selection.dispose();
+    this.floorGrid.removeFromParent();
+    this.floorGrid.geometry.dispose();
+    (this.floorGrid.material as THREE.Material).dispose();
     this.scene.remove(this.root);
   }
 }

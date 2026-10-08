@@ -2,9 +2,10 @@
 names, payload construction and validation.
 
 Producer channels (prefix P, default "interp"):
-  P.meta            JSON  {model, checkpoint?, layers[L+1], tokens[T]{label, group, detail?}, d_model,
-                           sample{index, total, label}, lens{kind, description}, heads, interventions, probes}
-  P.resid.proj      f32 [L+1, T, 3]   shared-PCA projection, ~unit range
+  P.meta            JSON  {model, short_name, checkpoint?, layers[L+1], tokens[T]{label, group, detail?}, d_model,
+                           sample{index, total, label}, lens{kind, description}, heads, interventions, probes,
+                           proj{normalized, basis, explained_variance[3]}}
+  P.resid.proj      f32 [L+1, T, 3]   shared-PCA projection of per-vector-normalized residuals, ~unit range
   P.resid.norm      f32 [L+1, T]
   P.resid.delta     f32 [L, 2, T]     attention (0) / MLP (1) write norms
   P.resid.mask      u8  [L+1, T]
@@ -72,9 +73,11 @@ class SampleView:
 
 def meta_payload(*, model: str, checkpoint: str | None, layers: list[str], view: SampleView, d_model: int,
                  n_heads: int, lens_kind: str, lens_description: str, interventions: str = "none",
-                 probes: list[str] | None = None) -> dict[str, Any]:
+                 probes: list[str] | None = None, short_name: str | None = None,
+                 proj: dict[str, Any] | None = None) -> dict[str, Any]:
     m: dict[str, Any] = {
         "model": model,
+        "short_name": short_name or model,
         "layers": layers,
         "tokens": view.tokens,
         "d_model": d_model,
@@ -86,6 +89,8 @@ def meta_payload(*, model: str, checkpoint: str | None, layers: list[str], view:
     }
     if checkpoint:
         m["checkpoint"] = checkpoint
+    if proj is not None:
+        m["proj"] = proj
     return m
 
 
@@ -141,6 +146,17 @@ def validate(payload: dict[str, Any], prefix: str, *, L: int, T: int, H: int) ->
         for k in ("model", "d_model", "sample", "lens"):
             if k not in meta:
                 problems.append(f"meta.{k} missing")
+        for k in ("model", "short_name", "checkpoint"):
+            if k in meta and not isinstance(meta[k], str):
+                problems.append(f"meta.{k}: expected a string")
+        if isinstance(meta.get("model"), str) and isinstance(meta.get("checkpoint"), str) and meta["checkpoint"]                 and meta["checkpoint"] in meta["model"]:
+            problems.append("meta.model must not contain the checkpoint path (use meta.checkpoint)")
+        pj = meta.get("proj")
+        if pj is not None:
+            ev = pj.get("explained_variance") if isinstance(pj, dict) else None
+            if not (isinstance(pj, dict) and isinstance(pj.get("normalized"), bool) and isinstance(pj.get("basis"), str)
+                    and isinstance(ev, list) and len(ev) == 3 and all(isinstance(x, (int, float)) for x in ev)):
+                problems.append("meta.proj: expected {normalized: bool, basis: str, explained_variance: number[3]}")
         if not all(isinstance(t, dict) and isinstance(t.get("label"), str) for t in meta.get("tokens", [])):
             problems.append("meta.tokens: every token needs a string label")
     ro = payload.get(ch(prefix, "lens.readout"))

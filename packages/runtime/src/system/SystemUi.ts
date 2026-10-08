@@ -113,7 +113,11 @@ export class SystemUi {
   }
 
   togglePanel(): boolean {
-    const v = !this.panel.visible;
+    return this.setPanelVisible(!this.panel.visible);
+  }
+
+  /** Show or hide the agent panel (idempotent). Returns the new visibility. */
+  setPanelVisible(v: boolean): boolean {
     if (v) this.openPanel();
     else this.panel.setVisible(false);
     return v;

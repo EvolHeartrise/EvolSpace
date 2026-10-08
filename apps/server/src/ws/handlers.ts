@@ -98,6 +98,8 @@ export function createHandlers(s: Services) {
       case 'command': {
         const name = m.name;
         if (typeof name !== 'string') { warn(c, 'command without name'); return; }
+        // App-level liveness probe: answer right away (clients count any inbound message).
+        if (name === 'ping') { c.send({ type: 'command', name: 'pong' }); return; }
         void s.commands.run(name, m.args, { clientId: c.id, origin: 'ws' }).catch((e: Error) => {
           warn(c, `command '${name}' failed: ${e.message}`);
           c.send({ type: 'agent.message', message: { id: `err-${Date.now().toString(36)}`, text: `Command '${name}' failed: ${e.message}`, kind: 'error', ts: Date.now() } });

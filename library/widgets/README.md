@@ -22,7 +22,7 @@ library/test/*.test.ts             harness + tests (npx vitest run library/test)
 | `group` | invisible container; `handle: true` adds a grab bar | handle, label | – |
 | `text` | SDF label, optional plate, billboarding | text, size, color, maxWidth, align, font, billboard off/yaw/full, background | text → |
 | `panel` | card: title + markup body (`#`, `-`, `1.`, ```` ``` ````, `---`, `**b**`, `` `c` ``), auto-size | title, body, width, height, maxWidth, textSize, color, accent | body, title → |
-| `slider` | pinch-drag knob/track, ticks for coarse steps, persists value | min, max, step, value, label, orientation, length, decimals, unit, color | value → value, commit |
+| `slider` | pinch-drag knob/track, ticks for coarse steps, persists value (drags and inputs); no emit on create unless `emitOnCreate` | min, max, step, value, label, orientation, length, decimals, unit, color, emitOnCreate | value, min, max → value, commit |
 | `button` | pinch/poke plate, press feedback, optional ask-Claude | label, width, height, color, fireOn, ask, logEvent | → press (event), pressed |
 | `toggle` | on/off switch, persists | value, label, color | value → value |
 | `gauge` | 270° dial with read-out | value, min, max, label, unit, color | value → |
@@ -39,7 +39,14 @@ library/test/*.test.ts             harness + tests (npx vitest run library/test)
 
 Exact props/ports/descriptions: the catalog (`widgets` MCP tool, `GET /api/widgets`).
 Prefabs: `slider-number` (slider → number), `control-panel` (panel + 2 sliders +
-toggle + button, publishing to `ui.control.*`).
+toggle + button, publishing to `ui.control.*`), `resid-lens` (resid-flow + layer/sample sliders).
+
+Slider pitfalls: it does not emit `value` on create (set `emitOnCreate: true` when a local
+consumer such as a read-out needs the initial value) — a `value → channel` link would otherwise
+overwrite shared channel state each time any client loads the scene. Link `commit` (user gestures
+only) to shared control channels; feed `min`/`max` from data (`#interp.meta` with transform
+`x.sample.total - 1`). A `value` input beyond the current range is clamped for display but
+remembered, so it re-applies when a later `max` input widens the range.
 
 ## The contract in one screen
 
@@ -281,7 +288,8 @@ h.dispose();
 
 - [ ] description says what it shows and names its main props/ports
 - [ ] every prop typed with a default; colors default to theme tokens
-- [ ] emits initial outputs; emits only on change; `setProps` only for user-made state (throttled)
+- [ ] emits only on change; initial outputs on create unless they could overwrite shared state
+      (then opt-in, like the slider's `emitOnCreate`); `setProps` only for state worth restoring (throttled)
 - [ ] no per-frame allocation; instancing/shared geometry; texts pooled/limited
 - [ ] interactive parts named; a grabbable margin remains
 - [ ] bad input → `ctx.error`, never a throw

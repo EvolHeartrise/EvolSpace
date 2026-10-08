@@ -9,13 +9,29 @@
 
 import type { InterpData } from './data.ts';
 
+/**
+ * Projection scaling:
+ *  global    — one center and scale for the whole stack (shows norm growth; layers whose
+ *              residuals barely differ collapse to a dot)
+ *  per-layer — each layer centered on its centroid and scaled to fill its plane
+ *              ('layer' is the legacy spelling)
+ *  auto      — global, but a layer whose spread would cover less than AUTO_MIN_FILL of the
+ *              plane is magnified about its centroid to that size (the centroid itself keeps
+ *              its global position, so drift between layers stays true). Magnified layers
+ *              report their gain (Layout.gain) and the view labels them "×g".
+ */
+export type NormalizeMode = 'auto' | 'global' | 'per-layer' | 'layer';
+export const NORMALIZE_MODES = ['auto', 'global', 'per-layer', 'layer'] as const;
+/** In 'auto', the minimum spread of a layer as a fraction of the plane's fit radius. */
+export const AUTO_MIN_FILL = 0.4;
+
 export interface LayoutOptions {
   /** Edge length of each layer plane (m). */
   width: number;
   /** Distance between consecutive layer planes (m). */
   spacing: number;
-  /** 'global': one scale for all layers (shows growth); 'layer': each layer fills its plane. */
-  normalize: 'global' | 'layer';
+  /** See NormalizeMode. */
+  normalize: NormalizeMode;
   /** Use projection component 2 as a y offset of up to ±depthJitter × spacing (0 = flat planes). */
   depthJitter: number;
   /** Token filter; omitted = all tokens visible. */
@@ -42,6 +58,8 @@ export interface Layout {
   visible: Uint8Array;
   /** Max |y offset| of nodes from their plane (depth jitter). */
   maxYOffset: number;
+  /** Per-layer magnification relative to the global scale (1 = true scale; 'auto' / 'per-layer'). */
+  gain: Float32Array;
 }
 
 export const layerY = (L: Layout, l: number): number => L.y0 + l * L.spacing;
@@ -90,44 +108,52 @@ export function buildLayout(data: InterpData, o: LayoutOptions, prev?: Layout): 
   // Centering + robust scale over all existing residuals (filtered ones too,
   // so toggling the filter does not rescale the scene).
   const scratch = new Float32Array(Math.max(1, n));
+  // Node (l, t) is placed at  (centroid_l − g) · fG + (p − centroid_l) · f[l]:
+  // the layer centroid at the global scale fG (g = global center), the spread around it at
+  // f[l]. global: f = fG and the centroid terms cancel; per-layer: g := centroid_l, f fills.
   const cx = new Float32Array(L1);
   const cz = new Float32Array(L1);
-  const scale = new Float32Array(L1);
+  const f = new Float32Array(L1);
+  const gain = prev && prev.gain.length >= L1 ? prev.gain : new Float32Array(Math.max(16, L1));
   const exists = (l: number, t: number) => data.exists(l, t);
-  if (o.normalize === 'layer') {
-    for (let l = 0; l < L1; l++) {
-      let sx = 0, sz = 0, c = 0;
-      for (let t = 0; t < T; t++) {
-        if (!exists(l, t)) continue;
-        const k = (l * T + t) * C;
-        sx += p.data[k]; sz += p.data[k + 1]; c++;
-      }
-      cx[l] = c ? sx / c : 0;
-      cz[l] = c ? sz / c : 0;
-      let m = 0;
-      for (let t = 0; t < T; t++) {
-        if (!exists(l, t)) continue;
-        const k = (l * T + t) * C;
-        scratch[m++] = Math.max(Math.abs(p.data[k] - cx[l]), Math.abs(p.data[k + 1] - cz[l]));
-      }
-      scale[l] = quantile(scratch, m, 0.98) || 1;
-    }
-  } else {
+  const mode = o.normalize === 'layer' ? 'per-layer' : o.normalize;
+  let gx = 0, gz = 0, gc = 0;
+  for (let l = 0; l < L1; l++) {
     let sx = 0, sz = 0, c = 0;
-    for (let l = 0; l < L1; l++) for (let t = 0; t < T; t++) {
+    for (let t = 0; t < T; t++) {
       if (!exists(l, t)) continue;
       const k = (l * T + t) * C;
       sx += p.data[k]; sz += p.data[k + 1]; c++;
     }
-    const mx = c ? sx / c : 0, mz = c ? sz / c : 0;
-    let m = 0;
-    for (let l = 0; l < L1; l++) for (let t = 0; t < T; t++) {
+    cx[l] = c ? sx / c : 0;
+    cz[l] = c ? sz / c : 0;
+    gx += sx; gz += sz; gc += c;
+  }
+  gx = gc ? gx / gc : 0;
+  gz = gc ? gz / gc : 0;
+  // Global scale: robust (98th percentile) max-axis deviation from the global center.
+  let m = 0;
+  for (let l = 0; l < L1; l++) for (let t = 0; t < T; t++) {
+    if (!exists(l, t)) continue;
+    const k = (l * T + t) * C;
+    scratch[m++] = Math.max(Math.abs(p.data[k] - gx), Math.abs(p.data[k + 1] - gz));
+  }
+  const fG = fitR / (quantile(scratch, m, 0.98) || 1);
+  for (let l = 0; l < L1; l++) {
+    f[l] = fG;
+    gain[l] = 1;
+    if (mode === 'global') continue;
+    let ml = 0;
+    for (let t = 0; t < T; t++) {
       if (!exists(l, t)) continue;
       const k = (l * T + t) * C;
-      scratch[m++] = Math.max(Math.abs(p.data[k] - mx), Math.abs(p.data[k + 1] - mz));
+      scratch[ml++] = Math.max(Math.abs(p.data[k] - cx[l]), Math.abs(p.data[k + 1] - cz[l]));
     }
-    const s = quantile(scratch, m, 0.98) || 1;
-    cx.fill(mx); cz.fill(mz); scale.fill(s);
+    const spread = quantile(scratch, ml, 0.98);
+    if (!(spread > 1e-12) || ml < 2) continue; // one node / all identical: nothing to magnify
+    if (mode === 'per-layer') f[l] = fitR / spread;
+    else f[l] = Math.max(fG, (fitR * AUTO_MIN_FILL) / spread);
+    gain[l] = f[l] / fG;
   }
 
   // Depth jitter scale from component 2.
@@ -162,9 +188,11 @@ export function buildLayout(data: InterpData, o: LayoutOptions, prev?: Layout): 
         continue;
       }
       const k = i * C;
-      const f = fitR / scale[l];
-      const x = clampAbs((p.data[k] - cx[l]) * f, half * 1.15);
-      const z = clampAbs((p.data[k + 1] - cz[l]) * f, half * 1.15);
+      // per-layer: every centroid at the plane center.
+      const ox = mode === 'per-layer' ? 0 : (cx[l] - gx) * fG;
+      const oz = mode === 'per-layer' ? 0 : (cz[l] - gz) * fG;
+      const x = clampAbs(ox + (p.data[k] - cx[l]) * f[l], half * 1.15);
+      const z = clampAbs(oz + (p.data[k + 1] - cz[l]) * f[l], half * 1.15);
       let dy = 0;
       if (yAmp > 0 && C >= 3) {
         dy = clampAbs((p.data[k + 2] / s2) * yAmp, yAmp);
@@ -180,7 +208,7 @@ export function buildLayout(data: InterpData, o: LayoutOptions, prev?: Layout): 
     }
   }
 
-  return { L1, T, width: o.width, spacing, y0, pos, nodeOf, nodeCount: count, nodeLayer, nodeToken, normN, visible, maxYOffset };
+  return { L1, T, width: o.width, spacing, y0, pos, nodeOf, nodeCount: count, nodeLayer, nodeToken, normN, visible, maxYOffset, gain };
 }
 
 function clampAbs(v: number, m: number): number {

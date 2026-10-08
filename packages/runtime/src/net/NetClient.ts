@@ -10,6 +10,14 @@
 //   per microtask.
 // - While disconnected, "durable" messages (scene ops, commands, publishes,
 //   errors…) are queued (bounded); ephemeral ones (poses, audio, voice) drop.
+// - Heartbeat: a dead path (Wi-Fi roam, PC asleep) can leave the socket
+//   "open" for minutes, because the server's WS-level pings are invisible to
+//   browsers. Any inbound frame counts as liveness; after `probeMs` of
+//   silence a lightweight app-level probe ({type:'command', name:'ping'}) is
+//   sent. A reconnect is forced when (a) the server has shown it answers
+//   probes (a `command` named 'pong' arrived) and nothing came in for
+//   `timeoutMs`, or (b) our send buffer stays backed up without draining for
+//   `stallMs` while nothing comes in.
 
 import {
   decodeTensorFrame,
@@ -72,11 +80,32 @@ export interface NetClientOptions {
    * delivered locally by the ChannelHub, so the echo is redundant traffic.
    */
   noEcho?: boolean;
+  /** Liveness heartbeat (default on); `false` disables it. */
+  heartbeat?: false | HeartbeatOptions;
+  /** Clock (ms) for the heartbeat (tests inject a fake one). Default Date.now. */
+  now?: () => number;
   /** Timer functions (tests can inject fake ones). */
   timers?: { setTimeout: (fn: () => void, ms: number) => unknown; clearTimeout: (h: unknown) => void };
   /** Diagnostics sink (default console). */
   log?: (level: 'info' | 'warn' | 'error', message: string, detail?: unknown) => void;
 }
+
+export interface HeartbeatOptions {
+  /** Send a probe after this much inbound silence (default 10 000 ms). */
+  probeMs?: number;
+  /**
+   * Force a reconnect after this much inbound silence, once the server has
+   * shown that it answers probes (default 30 000 ms).
+   */
+  timeoutMs?: number;
+  /** Force a reconnect when the send buffer stays backed up (not draining) this long with no inbound traffic (default 20 000 ms). */
+  stallMs?: number;
+}
+
+/** App-level liveness probe (a server command that does nothing). */
+export const PING_COMMAND = 'ping';
+/** Optional server answer to a probe (`{type:'command', name:'pong'}`); swallowed by the NetClient. */
+export const PONG_COMMAND = 'pong';
 
 /**
  * High-rate state that a newer message supersedes: skipped while the socket's
@@ -116,6 +145,17 @@ export class NetClient {
   private connectTimer: unknown = null;
   private closedByUser = false;
   private isReady = false;
+  // heartbeat
+  private hbTimer: unknown = null;
+  private lastRxAt = 0;
+  private lastProbeAt = -Infinity;
+  /** The server answered a probe at least once (sticky): inbound silence is then meaningful. */
+  private pongSeen = false;
+  /** The server rejected the probe command on this connection (older server): stop probing. */
+  private probeUnsupported = false;
+  private stallSince: number | null = null;
+  private lastBuffered = 0;
+  private readonly clock: () => number;
   private readonly timers: NonNullable<NetClientOptions['timers']>;
 
   constructor(url: string, role: ClientRole, opts: NetClientOptions = {}) {
@@ -127,6 +167,7 @@ export class NetClient {
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     };
+    this.clock = opts.now ?? (() => Date.now());
     if (opts.autoConnect !== false) this.connect();
   }
 
@@ -193,6 +234,7 @@ export class NetClient {
       if (this.ws !== ws) return;
       this.clearConnectTimer();
       this.attempt = 0;
+      this.startHeartbeat();
       this.sendRaw(this.helloMessage());
       const chans = [...this.channelRefs.keys()];
       this.pendingSub.clear();
@@ -205,6 +247,8 @@ export class NetClient {
     };
     ws.onmessage = (ev) => {
       if (this.ws !== ws) return;
+      this.lastRxAt = this.clock();
+      this.stallSince = null;
       this.receive(ev.data);
     };
     ws.onerror = () => {
@@ -220,6 +264,7 @@ export class NetClient {
   private abandon(ws: WebSocketLike): void {
     if (this.ws !== ws) return;
     this.clearConnectTimer();
+    this.stopHeartbeat();
     this.ws = null;
     this.isReady = false;
     ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
@@ -249,6 +294,7 @@ export class NetClient {
     this.closedByUser = true;
     this.clearReconnect();
     this.clearConnectTimer();
+    this.stopHeartbeat();
     const ws = this.ws;
     this.ws = null;
     this.isReady = false;
@@ -263,6 +309,88 @@ export class NetClient {
     if (this.connected || this.closedByUser) return;
     this.clearReconnect();
     this.connect();
+  }
+
+  // ------------------------------------------------------------------ heartbeat
+
+  private hbOptions(): Required<HeartbeatOptions> | null {
+    const h = this.opts.heartbeat;
+    if (h === false) return null;
+    const o = h ?? {};
+    return { probeMs: o.probeMs ?? 10_000, timeoutMs: o.timeoutMs ?? 30_000, stallMs: o.stallMs ?? 20_000 };
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    const o = this.hbOptions();
+    if (!o) return;
+    this.lastRxAt = this.clock();
+    this.lastProbeAt = -Infinity;
+    this.probeUnsupported = false;
+    this.stallSince = null;
+    this.lastBuffered = 0;
+    const tickMs = Math.max(250, Math.min(o.probeMs, o.timeoutMs, o.stallMs) / 4);
+    const tick = () => {
+      this.hbTimer = null;
+      if (!this.ws || this.ws.readyState !== WS_OPEN) return;
+      if (!this.heartbeat(o)) return; // the socket was abandoned
+      this.hbTimer = this.timers.setTimeout(tick, tickMs);
+    };
+    this.hbTimer = this.timers.setTimeout(tick, tickMs);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.hbTimer !== null) {
+      this.timers.clearTimeout(this.hbTimer);
+      this.hbTimer = null;
+    }
+  }
+
+  /** One heartbeat check. Returns false if it dropped the socket. */
+  private heartbeat(o: Required<HeartbeatOptions>): boolean {
+    const ws = this.ws!;
+    const t = this.clock();
+    const silent = t - this.lastRxAt;
+    if (this.pongSeen && silent >= o.timeoutMs) {
+      this.log('warn', `NetClient: no message from the server for ${Math.round(silent / 1000)} s; reconnecting`);
+      this.abandon(ws);
+      return false;
+    }
+    // Send-side stall: data handed to the socket is not leaving (dead path).
+    const buffered = ws.bufferedAmount ?? 0;
+    if (buffered > 0 && buffered >= this.lastBuffered) {
+      if (this.stallSince === null) this.stallSince = t;
+      else if (t - this.stallSince >= o.stallMs && silent >= o.stallMs) {
+        this.log('warn', `NetClient: send buffer stuck at ${buffered} bytes for ${Math.round((t - this.stallSince) / 1000)} s; reconnecting`);
+        this.abandon(ws);
+        return false;
+      }
+    } else {
+      this.stallSince = null;
+    }
+    this.lastBuffered = buffered;
+    if (silent >= o.probeMs && t - this.lastProbeAt >= o.probeMs && this.isReady && !this.probeUnsupported) {
+      this.lastProbeAt = t;
+      this.sendRaw({ type: 'command', name: PING_COMMAND });
+    }
+    return true;
+  }
+
+  /** Heartbeat bookkeeping for an inbound message. Returns true if the message is internal (not dispatched). */
+  private heartbeatMessage(msg: ServerMessage): boolean {
+    if (msg.type === 'command' && msg.name === PONG_COMMAND) {
+      this.pongSeen = true;
+      return true;
+    }
+    // A server without the ping command answers the probe with an error
+    // message ("Command 'ping' failed: unknown command ..."): keep it out of
+    // the user's panel and stop probing on this connection.
+    if (msg.type === 'agent.message' && msg.message?.kind === 'error' && typeof msg.message.text === 'string'
+      && msg.message.text.startsWith(`Command '${PING_COMMAND}' failed`) && this.lastProbeAt > -Infinity) {
+      this.probeUnsupported = true;
+      return true;
+    }
+    return false;
   }
 
   private scheduleReconnect(): void {
@@ -446,6 +574,7 @@ export class NetClient {
 
   private dispatch(msg: ServerMessage): void {
     if (!msg || typeof msg !== 'object' || typeof (msg as { type?: unknown }).type !== 'string') return;
+    if (this.heartbeatMessage(msg)) return;
     if (msg.type === 'hello') {
       this.clientId = msg.clientId;
       this.primary = msg.primary;

@@ -1,11 +1,15 @@
 """Dataset-wide activation capture: the shared PCA basis and the per-sample
 contract arrays (proj / norm / delta / mask) for every dataset sample.
 
-The PCA basis is fit on ALL meaningful residual vectors of the dataset (every
-layer, every computed non-padding token) and shared across layers, so a token's
-trajectory through depth is comparable in one 3D frame. Coordinates are centred on
-the global mean and scaled by one scalar so the 99th-percentile point sits at
-radius 1.
+Each residual vector is first divided by its RMS (``r / sqrt(mean(r**2))``): the
+model reads the stream through pre-LayerNorm anyway, and residual norms grow ~7x
+through depth, so without this the basis is dominated by late layers and early
+layers collapse onto the centre. The PCA basis is then fit on ALL meaningful
+normalized residual vectors of the dataset (every layer, every computed
+non-padding token) and shared across layers, so a token's trajectory through
+depth is comparable in one 3D frame. Coordinates are centred on the global mean
+(of the normalized vectors) and scaled by one scalar so the 99th-percentile point
+sits at radius 1. Magnitudes are not lost: P.resid.norm carries the raw L2 norms.
 
 Cached at data/interp/<model_id>/capture.npz; the full residual tensor is only
 kept in memory (float16) for probe / SAE training.
@@ -24,7 +28,19 @@ import numpy as np
 from .adapters.base import Adapter
 from .paths import data_dir
 
-CACHE_VERSION = 1
+#: capture.npz format. 2: projection of RMS-normalized residuals (v1 projected raw residuals;
+#: v1 files are ignored and recaptured).
+CACHE_VERSION = 2
+#: Projection mode written by this version (also checked on load).
+PROJ_NORMALIZED = True
+_EPS = 1e-12
+
+
+def normalize_rows(resid: np.ndarray) -> np.ndarray:
+    """[..., d] -> each vector divided by its RMS (zero vectors stay zero), float32."""
+    r = np.asarray(resid, dtype=np.float32)
+    rms = np.sqrt(np.mean(np.square(r, dtype=np.float32), axis=-1, keepdims=True))
+    return np.divide(r, rms, out=np.zeros_like(r), where=rms > _EPS)
 
 
 def model_dir(adapter: Adapter) -> Path:
@@ -39,11 +55,17 @@ class Projector:
     basis: np.ndarray           # (3, d) orthonormal rows (top principal directions)
     scale: float                # multiply projected coords by this
     explained: np.ndarray       # (3,) explained-variance ratio of each component
+    normalized: bool = PROJ_NORMALIZED   # residuals are RMS-normalized before centring/projection
 
     def project(self, resid: np.ndarray) -> np.ndarray:
         """[..., d] -> [..., 3] float32."""
-        r = np.asarray(resid, dtype=np.float32)
+        r = normalize_rows(resid) if self.normalized else np.asarray(resid, dtype=np.float32)
         return ((r - self.mean) @ self.basis.T * self.scale).astype(np.float32)
+
+    def describe(self) -> dict[str, Any]:
+        """P.meta.proj"""
+        return {"normalized": bool(self.normalized), "basis": "pca",
+                "explained_variance": [round(float(x), 6) for x in np.asarray(self.explained).reshape(-1)[:3]]}
 
 
 @dataclass
@@ -67,7 +89,7 @@ class DatasetCache:
         np.savez_compressed(
             tmp, version=CACHE_VERSION, model_id=self.model_id, layer_labels=np.array(self.layer_labels),
             pca_mean=self.projector.mean, pca_basis=self.projector.basis, pca_scale=self.projector.scale,
-            pca_explained=self.projector.explained, proj=self.proj, norm=self.norm, delta=self.delta,
+            pca_explained=self.projector.explained, pca_normalized=self.projector.normalized, proj=self.proj, norm=self.norm, delta=self.delta,
             mask=self.mask, meta=json.dumps(self.meta))
         tmp.replace(path)
 
@@ -79,7 +101,10 @@ class DatasetCache:
         with np.load(path, allow_pickle=False) as z:
             if int(z["version"]) != CACHE_VERSION or (model_id is not None and str(z["model_id"]) != model_id):
                 return None
-            proj = Projector(z["pca_mean"], z["pca_basis"], float(z["pca_scale"]), z["pca_explained"])
+            if "pca_normalized" not in z.files or bool(z["pca_normalized"]) != PROJ_NORMALIZED:
+                return None
+            proj = Projector(z["pca_mean"], z["pca_basis"], float(z["pca_scale"]), z["pca_explained"],
+                             bool(z["pca_normalized"]))
             return cls(str(z["model_id"]), [str(x) for x in z["layer_labels"]], proj, z["proj"], z["norm"],
                        z["delta"], z["mask"], json.loads(str(z["meta"])))
 
@@ -106,7 +131,7 @@ def capture_dataset(adapter: Adapter, *, batch: int = 256, keep_resid: bool = Tr
         norm[ix] = np.linalg.norm(cap.resid, axis=-1) * m
         delta[ix, :, 0] = cap.attn_write
         delta[ix, :, 1] = cap.mlp_write
-        rows = cap.resid[m].astype(np.float64)
+        rows = normalize_rows(cap.resid[m]).astype(np.float64)
         s1 += rows.sum(0)
         s2 += rows.T @ rows
         count += rows.shape[0]
@@ -121,7 +146,8 @@ def capture_dataset(adapter: Adapter, *, batch: int = 256, keep_resid: bool = Tr
     basis = evecs[:, order].T
     basis *= np.sign(basis[np.arange(3), np.argmax(np.abs(basis), axis=1)])[:, None]  # deterministic signs
     explained = evals[order] / max(evals.sum(), 1e-12)
-    projector = Projector(mean.astype(np.float32), basis.astype(np.float32), 1.0, explained.astype(np.float32))
+    projector = Projector(mean.astype(np.float32), basis.astype(np.float32), 1.0, explained.astype(np.float32),
+                          PROJ_NORMALIZED)
     # projection (second pass over the stored residuals, or a re-run without them)
     proj = np.zeros((N, L + 1, T, 3), np.float32)
     for a in range(0, N, batch):
@@ -134,10 +160,11 @@ def capture_dataset(adapter: Adapter, *, batch: int = 256, keep_resid: bool = Tr
     proj *= scale
     proj *= mask[..., None]
     meta = {"seconds": round(time.time() - t0, 2), "rows": int(count), "explained": [float(x) for x in explained],
+            "proj": projector.describe(),
             "describe": _jsonable(adapter.describe())}
     if log:
         log(f"[capture] {N} samples, {count} residual vectors in {meta['seconds']}s; "
-            f"PCA explained {', '.join(f'{x:.1%}' for x in explained)}")
+            f"PCA (RMS-normalized) explained {', '.join(f'{x:.1%}' for x in explained)}")
     cache = DatasetCache(adapter.model_id, adapter.layer_labels, projector, proj, norm, delta, mask, meta)
     return cache, resid_all
 

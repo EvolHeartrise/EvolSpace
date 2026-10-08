@@ -3,7 +3,7 @@
 // management).
 
 import type { InterpData } from './data.ts';
-import { ensureF32, quantile, type Layout } from './layout.ts';
+import { ensureF32, type Layout } from './layout.ts';
 
 export type RGB = [number, number, number];
 
@@ -14,6 +14,9 @@ export interface ColorSpec {
 }
 
 export type ColorBy = 'group' | 'position' | 'norm' | 'probe';
+
+/** Linear-RGB gray for "not applicable" probe scores (NaN). */
+export const NA_GRAY = 0.35;
 
 /** Piecewise-linear sample of a ramp at t ∈ [0, 1], written into out[o..o+2]. */
 export function sampleRamp(stops: readonly RGB[], t: number, out: Float32Array, o: number): void {
@@ -49,10 +52,10 @@ export function groupIndices(data: InterpData): Int32Array {
  *  group    — categorical palette by token group (falls back to 'position' without groups)
  *  position — sequential ramp over token index (upper 75% of the ramp: the dark end vanishes on glass)
  *  norm     — sequential ramp over normalized residual norm
- *  probe    — diverging ramp over the probe score; falls back to group. Two score conventions:
- *             probabilities (all values in [0, 1], -1 = not applicable — what python/evolinterp
- *             publishes): 0.5 = neutral, n/a = gray; otherwise signed scores with the
- *             98th-percentile |score| as full color.
+ *  probe    — diverging ramp over a FIXED [-1, 1] scale (python/evolinterp publishes
+ *             2·P(true class) − 1: +1 confidently right, 0 = undecided, −1 confidently wrong);
+ *             values beyond ±1 saturate; NaN (not applicable) = neutral gray. Falls back to group
+ *             without a valid probe tensor.
  */
 export function computeNodeColors(data: InterpData, L: Layout, mode: ColorBy, spec: ColorSpec, prev?: Float32Array): Float32Array {
   const { L1, T } = L;
@@ -61,16 +64,6 @@ export function computeNodeColors(data: InterpData, L: Layout, mode: ColorBy, sp
   let effective: ColorBy = mode === 'probe' && !probe ? 'group' : mode;
   const gi = groupIndices(data);
   if (effective === 'group' && !gi.some((g) => g >= 0)) effective = 'position';
-
-  let pScale = 1;
-  let prob = false;
-  if (effective === 'probe' && probe) prob = isProbability(probe.data);
-  if (effective === 'probe' && probe && !prob) {
-    const s = new Float32Array(probe.data.length);
-    let m = 0;
-    for (let i = 0; i < probe.data.length; i++) if (Number.isFinite(probe.data[i])) s[m++] = Math.abs(probe.data[i]);
-    pScale = quantile(s, m, 0.98) || 1;
-  }
 
   for (let l = 0; l < L1; l++) for (let t = 0; t < T; t++) {
     const i = l * T + t, o = i * 3;
@@ -94,23 +87,11 @@ export function computeNodeColors(data: InterpData, L: Layout, mode: ColorBy, sp
         break;
       case 'probe': {
         const v = probe!.data[i];
-        if (!Number.isFinite(v) || (prob && v < 0)) out[o] = out[o + 1] = out[o + 2] = 0.35; // n/a
-        else sampleDiverging(spec.diverging, prob ? 2 * v - 1 : v / pScale, out, o);
+        if (!Number.isFinite(v)) out[o] = out[o + 1] = out[o + 2] = NA_GRAY; // n/a
+        else sampleDiverging(spec.diverging, v, out, o);
         break;
       }
     }
   }
   return out;
-}
-
-/** True if scores look like probabilities: every finite value in [0, 1] or a negative n/a sentinel, at least one in [0, 1]. */
-export function isProbability(v: Float32Array): boolean {
-  let any = false;
-  for (let i = 0; i < v.length; i++) {
-    const x = v[i];
-    if (!Number.isFinite(x)) continue;
-    if (x >= 0 && x <= 1) any = true;
-    else if (x !== -1) return false;
-  }
-  return any;
 }

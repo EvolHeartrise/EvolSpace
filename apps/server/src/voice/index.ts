@@ -431,6 +431,16 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
         .finally(() => { busy--; updateStatus(); });
     },
 
+    onDisconnect(clientId: string): void {
+      // Audio can't arrive any more: drop the client's recordings now (not after staleMs).
+      // Utterances already being transcribed still route (the user finished speaking).
+      for (const u of [...listening.values()]) {
+        if (u.clientId !== clientId) continue;
+        deps.event('voice.utterance', { utteranceId: u.id, clientId, text: '', route: 'none', reason: 'disconnected' });
+        drop(u, 'client disconnected');
+      }
+    },
+
     async simulate(text: string, context?: Record<string, unknown>) {
       const id = `sim-${now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const t = text.replace(/\s+/g, ' ').trim();

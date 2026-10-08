@@ -15,7 +15,7 @@
 import type * as THREE_NS from 'three';
 import type { Theme, UiKit } from '@evolspace/protocol';
 import type { InterpData, LensReadout } from './data.ts';
-import { displayToken } from './data.ts';
+import { displayToken, fitText } from './data.ts';
 import type { RGB, ColorSpec } from './colors.ts';
 import { layerY, rayStack, type Layout, type RayHit, type RibbonBuffers, type TickBuffers } from './layout.ts';
 import { nodeMaterial, ribbonMaterial, tickMaterial, type RibbonUniforms } from './shaders.ts';
@@ -56,6 +56,22 @@ export const NODE_PICK_RADIUS = 0.018;
 /** Half thickness of a layer's touch slab (m). */
 const SLAB_HALF = 0.012;
 const MARGIN = 0.02;
+
+// Layout of the texts around the stack (widget-local meters). Nothing may overlap at any
+// lens layer: the header lives above the top plane and ends left of the readout column;
+// the readout panel (right of the lens handle/label) is kept between the top and bottom
+// planes (clamped in update()), so it never reaches the header.
+/** Readout panel's left edge, from the plane's right edge. */
+export const READOUT_X = 0.12;
+const HEADER_SIZE = 0.024;
+const SUB_SIZE = 0.014;
+const STATUS_SIZE = 0.012;
+const LENS_LABEL_SIZE = 0.016;
+/** How far the readout may reach above the top plane / below the bottom plane. */
+export const READOUT_OVERHANG = 0.02;
+/** Conservative Inter advance (em) for single-line fitting (wide glyphs, digits). */
+const SANS_ADV = 0.6;
+const fitChars = (width: number, size: number): number => Math.max(4, Math.floor(width / (size * SANS_ADV)));
 
 interface GrowMesh<T extends THREE_NS.Object3D> {
   obj: T | null;
@@ -117,6 +133,8 @@ export class ResidView {
 
   // state
   private layout: Layout | null = null;
+  /** Unfitted header lines (title, subtitle, status). */
+  private readonly headerRaw: [string, string, string] = ['', '', ''];
   private lensTarget = 0;
   private lensCur = 0;
   private lensLayer = -1;
@@ -174,7 +192,7 @@ export class ResidView {
     this.lensFill.renderOrder = 2;
     this.handle = new THREE.Mesh(new THREE.CapsuleGeometry(0.007, 0.026, 4, 10), this.handleMat);
     this.handle.name = HANDLE_NAME;
-    this.lensLabel = this.ui.text('', { size: 0.016, color: th.accent, anchorX: 'left', anchorY: 'middle' });
+    this.lensLabel = this.ui.text('', { size: LENS_LABEL_SIZE, color: th.accent, anchorX: 'left', anchorY: 'middle' });
     this.readout = new ReadoutPanel(THREE, this.ui, th);
     this.lens.add(this.lensFill, this.lensLine, this.handle, this.lensLabel, this.readout.group);
     this.group.add(this.lens);
@@ -186,12 +204,14 @@ export class ResidView {
     this.hoverFrame.frustumCulled = false;
     this.group.add(this.hoverFrame);
 
-    this.header = this.ui.text('', { size: 0.024, color: th.text, anchorX: 'left', anchorY: 'bottom' });
-    this.subheader = this.ui.text('', { size: 0.014, color: th.textDim, anchorX: 'left', anchorY: 'top' });
-    this.status = this.ui.text('', { size: 0.012, color: th.textDim, anchorX: 'left', anchorY: 'top' });
+    // Header texts are fitted to one line (setHeader); no maxWidth, so they never wrap downwards.
+    this.header = this.ui.text('', { size: HEADER_SIZE, color: th.text, anchorX: 'left', anchorY: 'bottom' });
+    this.subheader = this.ui.text('', { size: SUB_SIZE, color: th.textDim, anchorX: 'left', anchorY: 'top' });
+    this.status = this.ui.text('', { size: STATUS_SIZE, color: th.textDim, anchorX: 'left', anchorY: 'top' });
     this.selLabel = this.ui.text('', { size: 0.016, color: th.text, anchorX: 'left', anchorY: 'bottom' });
     this.hoverLabel = this.ui.text('', { size: 0.014, color: th.text, anchorX: 'left', anchorY: 'bottom' });
     this.group.add(this.header, this.subheader, this.status, this.selLabel, this.hoverLabel);
+    for (const t of [this.header, this.subheader, this.status]) t.raycast = noRaycast;
     this.selLabel.visible = false;
     this.hoverLabel.visible = false;
     // Labels that float next to nodes must not occlude them for the picker
@@ -306,7 +326,7 @@ export class ResidView {
     nm.instanceMatrix.needsUpdate = true;
     nm.geometry.getAttribute('aInfo').needsUpdate = true;
     nm.geometry.getAttribute('aColor').needsUpdate = true;
-    this.setBounds(nm, L);
+    this.setBounds(nm, L, this.style.nodeSize * 1.5);
     nm.visible = n > 0;
 
     this.buildSlabs(L);
@@ -319,7 +339,7 @@ export class ResidView {
     this.hoverFrame.scale.set(s, 1, s);
     this.handle.position.set(L.width / 2 + 0.035, 0, 0);
     this.lensLabel.position.set(L.width / 2 + 0.052, 0, 0);
-    this.readout.group.position.set(L.width / 2 + 0.1, 0, 0);
+    this.readout.group.position.set(L.width / 2 + READOUT_X, 0, 0);
     this.tickMat.uniforms.uBarH.value = Math.max(0.012, L.spacing * 0.42);
 
     // Header above the stack's front edge (clear of the lens plane and the arcs above it).
@@ -329,6 +349,36 @@ export class ResidView {
     this.status.position.set(-L.width / 2, layerY(L, 0) - 0.03, L.width / 2);
     if (firstLayout) this.lensSnap = true;
     this.setStyle(this.style);
+    this.fitHeader();
+    this.placeReadout();
+  }
+
+  /** Width available to header/status lines: from the stack's left edge to just before the readout column. */
+  headerWidth(): number {
+    return (this.layout?.width ?? 0.5) + READOUT_X - 0.015;
+  }
+
+  /** Single-line fit of the header texts (word-boundary truncation with an ellipsis). */
+  private fitHeader(): void {
+    const w = this.headerWidth();
+    this.header.set(fitText(this.headerRaw[0], fitChars(w, HEADER_SIZE)));
+    this.subheader.set(fitText(this.headerRaw[1], fitChars(w, SUB_SIZE)));
+    this.status.set(fitText(this.headerRaw[2], fitChars(w, STATUS_SIZE)));
+  }
+
+  /**
+   * Keep the readout panel next to the lens but inside the stack's vertical extent
+   * (± READOUT_OVERHANG), so at the top layer it cannot rise into the header and at
+   * the bottom it does not hang below the stack. Cheap; runs every frame.
+   */
+  private placeReadout(): void {
+    const L = this.layout;
+    if (!L) return;
+    const h = this.readout.height;
+    const hi = layerY(L, L.L1 - 1) + READOUT_OVERHANG - h / 2;
+    const lo = layerY(L, 0) - READOUT_OVERHANG + h / 2;
+    const y = lo > hi ? hi : Math.min(hi, Math.max(lo, this.lensCur));
+    this.readout.group.position.y = y - this.lensCur;
   }
 
   private replace(old: THREE_NS.Object3D | null, next: THREE_NS.Object3D): void {
@@ -341,8 +391,17 @@ export class ResidView {
     this.group.add(next);
   }
 
-  /** Bounds for picking/culling from the layout extents (buffers hold stale tails). */
-  private setBounds(obj: THREE_NS.Mesh | THREE_NS.InstancedMesh, L: Layout): void {
+  /**
+   * Bounds for picking/culling/framing. Plain meshes get the layout extents
+   * (their buffers hold stale tails). An InstancedMesh gets the layout extents as
+   * its own (all-instances) box, but its GEOMETRY box must bound ONE instance:
+   * generic bounds code (the runtime's framing/picker, three's
+   * InstancedMesh.computeBoundingBox) unions geometry box × instance matrix, so
+   * the layout box there would inflate the subtree by a whole stack per side
+   * (entity screenshots then framed the rig at a third of the image).
+   * `instanceHalf`: half-extent of one shader-sized instance around its origin.
+   */
+  private setBounds(obj: THREE_NS.Mesh | THREE_NS.InstancedMesh, L: Layout, instanceHalf = 0): void {
     const THREE = this.THREE;
     const h = L.width / 2 + 0.03;
     const y0 = layerY(L, 0) - L.spacing, y1 = layerY(L, L.L1 - 1) + L.spacing;
@@ -351,6 +410,10 @@ export class ResidView {
     if ((obj as THREE_NS.InstancedMesh).isInstancedMesh) {
       (obj as THREE_NS.InstancedMesh).boundingBox = box;
       (obj as THREE_NS.InstancedMesh).boundingSphere = sphere;
+      const e = Math.max(1e-3, instanceHalf);
+      obj.geometry.boundingBox = new THREE.Box3(new THREE.Vector3(-e, -e, -e), new THREE.Vector3(e, e, e));
+      obj.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), e * Math.sqrt(3));
+      return;
     }
     obj.geometry.boundingBox = box.clone();
     obj.geometry.boundingSphere = sphere.clone();
@@ -503,6 +566,14 @@ export class ResidView {
     return c.hit ? this.rayHit : null;
   }
 
+  /** Layer label: its name, plus the magnification when normalization enlarged it ("embed ×3.2"). */
+  layerText(L: Layout, data: InterpData, l: number): string {
+    const name = data.layerLabel(l);
+    const g = L.gain[l];
+    if (!(g > 1.05)) return name;
+    return `${name} ×${g >= 9.95 ? Math.round(g) : g.toFixed(1)}`;
+  }
+
   private buildLayerLabels(L: Layout, data: InterpData): void {
     // Label every k-th layer so dense stacks stay legible; always first and last.
     const stride = Math.max(1, Math.ceil(L.L1 / 12));
@@ -520,7 +591,7 @@ export class ResidView {
       t.visible = used && this.style.showLabels;
       if (!used) continue;
       const l = want[i];
-      t.set(data.layerLabel(l));
+      t.set(this.layerText(L, data, l));
       t.position.set(-L.width / 2 - 0.014, layerY(L, l), L.width / 2);
     }
   }
@@ -560,7 +631,9 @@ export class ResidView {
     tm.count = n;
     tm.instanceMatrix.needsUpdate = true;
     tm.geometry.getAttribute('aTick').needsUpdate = true;
-    this.setBounds(tm, L);
+    // Tick bars sit beside the node: x up to nodeSize·0.75 + a few bar widths, height up to uBarH.
+    const tu = this.tickMat.uniforms;
+    this.setBounds(tm, L, tu.uNodeSize.value * 0.75 + tu.uBarW.value * 3 + tu.uBarH.value);
     tm.visible = this.style.showDelta;
   }
 
@@ -587,7 +660,8 @@ export class ResidView {
       this.lensSnap = false;
     }
     this.lens.position.y = this.lensCur;
-    this.lensLabel.set(label);
+    this.lensLabel.set(fitText(label, 7)); // room between the handle and the readout column
+    this.placeReadout();
     this.nodeMat.uniforms.uLensLayer.value = layer;
     this.tickMat.uniforms.uLensLayer.value = layer;
   }
@@ -639,12 +713,15 @@ export class ResidView {
 
   setReadout(r: LensReadout | null, stale: boolean, fallbackTitle: string, waitingNote: string): void {
     this.readout.set(r, stale, fallbackTitle, waitingNote);
+    this.placeReadout();
   }
 
+  /** Header lines (title, subtitle, status); each is fitted to one line left of the readout column. */
   setHeader(title: string, sub: string, status: string): void {
-    this.header.set(title);
-    this.subheader.set(sub);
-    this.status.set(status);
+    this.headerRaw[0] = title;
+    this.headerRaw[1] = sub;
+    this.headerRaw[2] = status;
+    this.fitHeader();
   }
 
   // ---------------------------------------------------------------- frame
@@ -659,6 +736,7 @@ export class ResidView {
       this.lensCur += (this.lensTarget - this.lensCur) * k;
       if (Math.abs(this.lensTarget - this.lensCur) < 1e-4) this.lensCur = this.lensTarget;
       this.lens.position.y = this.lensCur;
+      this.placeReadout();
     }
     this.ribbonMat.uniforms.uLens.value = (this.lensCur - L.y0) / L.spacing;
   }

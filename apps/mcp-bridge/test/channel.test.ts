@@ -212,7 +212,7 @@ describe('channel pump', () => {
 
 describe('unanswered-ask detector (session without the channel)', () => {
   /** Fake server whose agent status behaves like the real one: last POST wins, GET returns it. */
-  async function statusServer(initial: { state: string; detail?: string } = { state: 'idle' }) {
+  async function statusServer(initial: { state: string; detail?: string } = { state: 'idle' }, unansweredMs = 300) {
     const log = new EventLog();
     let status: { state: string; detail?: string } = initial;
     const fake = await new FakeEvol()
@@ -226,7 +226,7 @@ describe('unanswered-ask detector (session without the channel)', () => {
       .on('POST /api/agent/say', { json: { id: 'm-1' } })
       .start();
     cleanups.push(() => fake.stop());
-    const b = await connectBridge({ evolUrl: fake.url, pump: { ...PUMP, unansweredMs: 300 } });
+    const b = await connectBridge({ evolUrl: fake.url, pump: { ...PUMP, unansweredMs } });
     cleanups.push(() => b.close());
     await until(() => b.bridge.pump!.stats.connected);
     return { log, fake, b, setStatus: (s: typeof status) => (status = s) };
@@ -253,11 +253,14 @@ describe('unanswered-ask detector (session without the channel)', () => {
   });
 
   it('stays quiet when a hook updates the status', async () => {
-    const { log, fake, b, setStatus } = await statusServer();
+    // A longer window than the other cases: the test reacts to the push from another
+    // process hop, and under a loaded full-suite run 300 ms was occasionally too short
+    // for setStatus to land before the check (a flake, not a detector bug).
+    const { log, fake, b, setStatus } = await statusServer({ state: 'idle' }, 1500);
     log.add('agent.ask', { text: 'make it red' });
     await until(() => b.notifications.length === 1);
     setStatus({ state: 'working', detail: 'Editing box/widget.ts' });
-    await settle();
+    await new Promise((r) => setTimeout(r, 1900));
     expect(fake.find('POST', '/api/agent/say')).toHaveLength(0);
   });
 

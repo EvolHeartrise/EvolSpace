@@ -14,7 +14,7 @@ const prefabFile = path.join(libraryDir, 'prefabs', 'resid-lens.json');
 const prefab = JSON.parse(readFileSync(prefabFile, 'utf8')) as Prefab;
 
 /** Slider ports per the standard widget library contract (used when the slider source is unavailable). */
-const SLIDER_FALLBACK = { inputs: ['value'], outputs: ['value', 'commit'], props: ['min', 'max', 'step', 'value', 'label', 'orientation', 'length', 'decimals'] };
+const SLIDER_FALLBACK = { inputs: ['value', 'min', 'max'], outputs: ['value', 'commit'], props: ['min', 'max', 'step', 'value', 'label', 'orientation', 'length', 'decimals', 'emitOnCreate'] };
 
 async function sliderSpec(): Promise<{ inputs: string[]; outputs: string[]; props: string[] }> {
   const file = path.join(libraryDir, 'widgets', 'slider', 'widget.ts');
@@ -64,6 +64,11 @@ describe('resid-lens prefab', () => {
     // Sliders emit 'value' on create (their stored value): only user-gesture 'commit's may
     // reach the ctl channels, or every client reload would reset the producer's state.
     for (const l of prefab.links) if (l.to.kind === 'channel' && l.from.kind === 'port') expect(l.from.port).toBe('commit');
+    // Sliders never emit on create; their ranges come from interp.meta.
+    for (const id of ['layer-slider', 'sample-slider']) {
+      expect(byId.get(id)!.props?.emitOnCreate ?? false).toBe(false);
+      expect(prefab.links.some((l) => l.from.kind === 'channel' && l.from.channel === 'interp.meta' && l.to.kind === 'port' && l.to.entity === id && l.to.port === 'max')).toBe(true);
+    }
     // The visualizer publishes its own picks; the sliders follow the channels.
     expect(root.props?.publishLayer ?? true).toBe(true);
   });

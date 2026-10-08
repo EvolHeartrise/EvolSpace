@@ -77,6 +77,8 @@ export interface BuiltinDeps {
   say(text: string, kind?: 'reply' | 'info' | 'error' | 'heard'): void;
   restartSource(id: string): Promise<unknown>;
   rebuildWidget(id: string): Promise<unknown>;
+  /** Publish a value on the data bus; returns the new seq. Throws (status 400) on a bad name/value. */
+  publish(channel: string, value: unknown, opts: { producer: string; origin?: string }): { seq: number };
 }
 
 function entityArg(args: Record<string, unknown>, store: SceneStore): string {
@@ -204,6 +206,25 @@ export function registerBuiltinCommands(reg: CommandRegistry, d: BuiltinDeps): v
     description: 'Force a rebuild of a widget bundle.',
     args: '{id: string}',
     run: (args) => d.rebuildWidget(stringArg(args, 'id')),
+  });
+  reg.register('channel.publish', {
+    description: "Publish a value on a data channel (e.g. voice 'layer five' → {channel:'interp.ctl.layer', value:5}).",
+    args: '{channel: string, value: any}',
+    run: (args, ctx) => {
+      const channel = stringArg(args, 'channel');
+      if (!('value' in args) || args.value === undefined) throw new CommandError('missing {value}');
+      try {
+        const { seq } = d.publish(channel, args.value, { producer: `command:${ctx.origin}`, ...(ctx.clientId ? { origin: ctx.clientId } : {}) });
+        return { channel, seq };
+      } catch (e) {
+        const status = (e as { status?: unknown }).status;
+        throw new CommandError((e as Error).message, typeof status === 'number' ? status : 400);
+      }
+    },
+  });
+  reg.register('ping', {
+    description: 'No-op liveness probe (over WebSocket the server also replies {type:"command", name:"pong"}).',
+    run: () => ({ ok: true }),
   });
   reg.register('commands.list', { description: 'List server commands.', run: () => reg.list() });
 }

@@ -124,7 +124,7 @@ describe('slider', () => {
   });
 
   it('an ongoing drag survives a rebuild and ignores a concurrent value prop change', async () => {
-    h = await mount(slider, { min: 0, max: 1, step: 0, value: 0.5, length: 0.2 });
+    h = await mount(slider, { min: 0, max: 1, step: 0, value: 0.5, length: 0.2, emitOnCreate: true });
     const p0 = h.partPosition('knob');
     h.interact({ handler: 'drag', phase: 'start', objectName: 'knob', localPoint: p0 });
     await h.setProps({ label: 'changed mid-drag', value: 0.9 });

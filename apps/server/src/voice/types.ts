@@ -41,6 +41,12 @@ export interface VoiceService {
   onBegin(clientId: string, msg: VoiceBegin): void;
   onAudio(clientId: string, utteranceId: string, pcm: Int16Array): void;
   onEnd(clientId: string, msg: VoiceEnd): void;
+  /**
+   * Optional (added by the server core, backward compatible): the client's
+   * WebSocket closed. Its utterances still being recorded are dropped right away
+   * (instead of waiting for the stale timer), so the 'listening' indicator clears.
+   */
+  onDisconnect?(clientId: string): void;
   /** Route text as if it had been spoken (POST /api/voice/simulate). */
   simulate(text: string, context?: Record<string, unknown>): Promise<{ route: 'fastpath' | 'agent' | 'none'; command?: string }>;
   commands(): import('@evolspace/protocol').VoiceCommand[];

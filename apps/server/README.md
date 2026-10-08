@@ -45,6 +45,8 @@ a temp library/data dir and stub mirror/voice), `TestClient` (WS client with
 `next(type, pred)`), and `makeLibrary()`. `test/hardening.test.ts` covers the
 origin/host policy, TLS reuse decisions, workspace safety, undo robustness,
 recording reconnects, stale event cursors, Windows `.cmd` sources and orphan reaping.
+`test/fixes.test.ts` covers exact undo, no-op batches, save-as resync, `channel.publish`/`ping`,
+voice wiring, gesture lint warnings and screenshot error statuses.
 The MCP bridge's `integration.test.ts` also runs against this server in-process.
 
 ## Layout
@@ -105,6 +107,11 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
   `command` sends that client an `agent.message` of kind `error`.
 - Binary frames: `AUD0…` → `VoiceService.onAudio`; anything else is a tensor
   frame published to `header.channel`.
+- **Liveness:** `{type:'command', name:'ping'}` is answered (to the sender only) with
+  `{type:'command', name:'pong'}` — clients treat any inbound message as "alive" and
+  should ignore `pong`. Over HTTP, `ping` returns `{ok: true}`.
+- On disconnect the server tells voice (`VoiceService.onDisconnect`), which drops that
+  client's utterances still being recorded right away (not after the 10 s stale timer).
 
 **Scene store**
 - Ops are applied atomically per batch (rollback on error; the error names the
@@ -119,6 +126,13 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
   `interactions`, `locked`) — used by inverse ops for undo.
 - Undo grouping: same `group` id (one grab), or same interactive source
   (`user`/`widget`/`voice`) within 400 ms. Agent batches are separate steps.
+  A batch that changes nothing (every op re-sets current values, `clear` on an empty
+  scene) is still applied and broadcast but is **not** an undo step (and keeps redo).
+- Undo is exact: a prop key an edit created (unknown prop, or a default filled in by a
+  `widget` change) is **deleted** on undo, not set to a default/null; undoing a widget
+  change restores the previous props exactly. Inverse ops carry an internal
+  `$unsetProps` field (rejected from callers, never broadcast); because a `scene.patch`
+  can't delete keys, such an undo is followed by a `scene.snapshot` (clients diff it).
   Undo/redo broadcast with source `undo`/`redo`. `POST /api/scene/undo|redo` return
   `{version, ok}` (`ok:false` = nothing to undo); if an inverse ever fails to apply
   the scene is untouched, the history is cleared and `error` explains why.
@@ -133,6 +147,8 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
   repaired; each repair is logged). An unreadable file at boot is renamed to
   `<name>.json.corrupt-<ts>` before the server starts empty (never overwritten).
   `new` refuses an existing name (409). Prefab link ids in files are ignored (fresh ids).
+  Save-as (`POST /api/workspaces/<new>/save`, `workspace.save {name}`) renames the current
+  workspace and broadcasts a `scene.snapshot` so clients' `SceneState.workspace` is current.
 
 **Widgets** (`library/widgets/<id>/widget.ts`)
 - esbuild → one ESM bundle (inline source map). Runtime npm imports are rejected
@@ -169,9 +185,19 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
 - Pose recording survives a headset reconnect: if the recording client drops, its
   `pose.recording` is accepted from the reconnected client for 10 s.
 - `user.pose` without a valid `head` is ignored (one `client.log` warning per client).
-- `/widgets/:id.js` answers `If-None-Match` with 304. Screenshot/thumbnail request
-  errors from the mirror (`ScreenshotRequestError`) are 400; renderer failures 502.
-- Voice gets `describeEntity(id)` (name + widget) for readable deictic context.
+- `/widgets/:id.js` answers `If-None-Match` with 304.
+- Screenshot/thumbnail errors (`routes/mirror-errors.ts`): request problems are 4xx —
+  `ScreenshotRequestError` and page-side request errors (invalid background, unknown
+  widget/entity, a widget that fails to load or reports a render error) → 400; unknown
+  entity (entity view) / widget (widget view) are pre-checked → 404; `user` view without a
+  headset → 409. Renderer trouble is 5xx: timeouts 504, busy/closed 503, crashes 502.
+- Gesture files: besides structural errors (file skipped, `errors` in `GET /api/gestures`),
+  loaded files are linted with `@evolspace/input`'s `validatePoseDef` /
+  `validateInteractionSet` (unknown feature names, bad binding `hand` values, …) →
+  `warnings: {file: string[]}`. Every (re)load records a `gestures.load` event
+  `{ok, poses, interactions, errors?, warnings?}` so Claude sees typos after an edit.
+- Voice gets `describeEntity(id)` (name + widget) for readable deictic context and
+  `agentStatus()` (to hand Claude's thinking/working indicator back after an utterance).
 - `main.ts` shuts down gracefully on SIGINT/SIGTERM/SIGBREAK/SIGHUP; an uncaught
   exception saves the workspace synchronously before exiting.
 - Mirror is started lazily on the first screenshot/thumbnail (retried if it fails).
@@ -182,10 +208,12 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
 list), `GET /api/agent/status` (`{status, messages}`), `GET /api/commands`,
 `GET /api/prefabs`, `GET /api/sources/:id`, `DELETE /api/channels/:name`,
 `GET /api/channels/:name?format=json`, `X-Producer`/`X-Description` headers on
-PUT, `errors` in `GET /api/gestures`, `warnings` in `POST /api/scene/ops`, extra
+PUT, `errors`/`warnings` in `GET /api/gestures`, `warnings` in `POST /api/scene/ops`, extra
 fields in `/api/health` and source statuses, `group` in `POST /api/scene/ops`.
 
 Extra server commands: `workspace.load {name}`, `workspace.new {name}`, `say
-{text, kind?}`, `source.restart {id}`, `widget.rebuild {id}`, `commands.list`.
+{text, kind?}`, `source.restart {id}`, `widget.rebuild {id}`, `commands.list`,
+`channel.publish {channel, value}` → `{channel, seq}` (voice fast-path / bindings driving
+channels, e.g. "layer five"; producer `command:<origin>`), `ping` → `{ok: true}`.
 `screenshot` saves `data/screenshots/<ts>.png` and records a `client.log` event
 with `kind: 'screenshot'` and the path.

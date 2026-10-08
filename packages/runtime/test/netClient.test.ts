@@ -48,8 +48,8 @@ describe('NetClient', () => {
     expect(second).not.toBe(first);
     second.open();
     expect(net.connected).toBe(true);
-    // The open cleared the connect timeout; a late close of the first socket is ignored.
-    expect(timers.pending).toHaveLength(0);
+    // The open cleared the connect timeout (only the heartbeat tick is left); a late close of the first socket is ignored.
+    expect(timers.pending.map((p) => p.ms)).not.toContain(5000);
     first.onclose?.({ code: 1006 });
     expect(net.connected).toBe(true);
   });

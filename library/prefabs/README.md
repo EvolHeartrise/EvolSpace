@@ -24,11 +24,16 @@ remapped, channel ends are kept as written, `props` overrides are keyed by local
 
 Tips: parent children to one root so grabbing the root moves everything; put children
 ~4 mm in front of a parent card (`z: 0.004`); keep channel names dot-separated.
+Sliders don't emit on create: give a slider `"emitOnCreate": true` only when a local consumer
+needs its initial value (read-out) or it is the only writer of its channel. Channel→port links
+with a transform that returns `undefined` for incomplete data act as filters
+(`"x && x.sample ? x.sample.total - 1 : undefined"`).
 
 | prefab | contents |
 |---|---|
 | `slider-number` | slider (`slider`) with a `number` read-out (`readout`) as its child; port→port link |
-| `control-panel` | `panel` + sliders `gain`, `threshold`, toggle `enabled`, button `reset`; port→channel links to `ui.control.{gain,threshold,enabled,reset}`; port→port links with constant transforms make Reset restore the sliders |
+| `control-panel` | `panel` + sliders `gain`, `threshold`, toggle `enabled`, button `reset`; port→channel links to `ui.control.{gain,threshold,enabled,reset}`; port→port links with constant transforms make Reset restore the sliders. Sliders set `emitOnCreate` (sole writers of their channels) |
+| `resid-lens` | `resid-flow` (`resid`) + vertical `layer-slider` + `sample-slider`; slider ranges from `#interp.meta` (channel→port links with transforms), `commit` → `interp.ctl.*`, `interp.ctl.*` → slider `value`. Sliders never emit on create, so loading the scene never overwrites the producer's state. Details: `library/widgets/resid-flow/README.md` |
 
 `library/test/prefabs.test.ts` validates every prefab here against the widget
 definitions and simulates its links.

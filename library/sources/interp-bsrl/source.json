@@ -1,5 +1,5 @@
 {
-  "description": "Interp live source for the BeatSaberRL policy (python/evolinterp): publishes interp.* (residual stream, attention, probes, logit lens, SAE features) for the selected sample and follows interp.ctl.* (layer, token, sample, play, ablate). First start captures activations (~15 s) and trains probes in the background (~1-2 min); later starts load data/interp caches. Stop interp-toy first (same prefix).",
+  "description": "Interp live source for the BeatSaberRL policy (python/evolinterp): publishes interp.* (residual stream, attention, probes, logit lens, SAE features) for the selected sample and follows interp.ctl.* (layer, token, sample, play, ablate). First start captures activations (~15 s) and trains probes in the background (~1-2 min); later starts load data/interp caches. One interp process per prefix: if interp-toy already serves interp.*, this source refuses to start (log says so) and stops itself - stop interp-toy first.",
   "command": "{python:python/evolinterp}",
   "args": [
     "-m",
@@ -9,7 +9,9 @@
     "--checkpoint",
     "C:/Users/Flee/beat-arena-volume-backup/bend7/runs/bend7_cd1000/leaf_from_upd06000.pt",
     "--prefix",
-    "interp"
+    "interp",
+    "--source",
+    "interp-bsrl"
   ],
   "cwd": "../../../python/evolinterp",
   "autostart": false,

@@ -90,7 +90,11 @@ export class RuntimeInteractionHost implements InteractionHost {
   setEntityTransform(id: string, t: Transform, phase: GesturePhase): void {
     const node = this.d.reconciler.node(id);
     const entity = this.d.mirror.entity(id);
-    if (!node || !entity || entity.locked) return;
+    if (!node || !entity || entity.locked) {
+      // Removed or locked mid-gesture: the gesture is over for us.
+      this.drop(id);
+      return;
+    }
     const local = this.toParentLocal(node.object, t);
     let g = this.gestures.get(id);
     if (!g || phase === 'start') {
@@ -113,8 +117,9 @@ export class RuntimeInteractionHost implements InteractionHost {
   /** Send due trailing move ops (call per frame). */
   flush(t = now()): void {
     for (const [id, g] of this.gestures) {
-      if (!this.d.mirror.entity(id)) {
-        this.gestures.delete(id); // removed mid-gesture
+      const e = this.d.mirror.entity(id);
+      if (!e || e.locked || !this.d.reconciler.node(id)) {
+        this.drop(id); // removed (or locked) mid-gesture
         continue;
       }
       if (g.pending && t - g.lastSent >= this.moveInterval) this.send(id, g.pending, g, t);
@@ -124,6 +129,17 @@ export class RuntimeInteractionHost implements InteractionHost {
   /** The entity was removed: drop its gesture state (no more ops for it). */
   forget(id: string): void {
     this.gestures.delete(id);
+  }
+
+  /** Entities with a gesture in progress (diagnostics, tests). */
+  activeGestures(): string[] {
+    return [...this.gestures.keys()];
+  }
+
+  /** End a gesture without sending anything; a still-present entity snaps back to its scene transform. */
+  private drop(id: string): void {
+    if (!this.gestures.delete(id)) return;
+    this.d.reconciler.clearPreview(id);
   }
 
   private send(id: string, local: Transform, g: Gesture, t = now()): void {

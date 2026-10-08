@@ -29,6 +29,7 @@ import type {
   WidgetDefinition,
   WidgetInstance,
 } from '@evolspace/protocol';
+import { objectBox } from '../../packages/runtime/src/interaction/Picker.ts';
 
 export const TEST_THEME: Theme = {
   background: '#0e131b',
@@ -528,20 +529,20 @@ export function instanceMatrix(mesh: THREE.InstancedMesh, i: number): THREE.Matr
 }
 
 /**
- * Bounds as the runtime's framing measures them (Picker.subtreeBounds, used for
- * screenshots): each visible object's geometry.boundingBox × matrixWorld, with
- * InstancedMesh instances NOT expanded. (The picker's own hit box now uses
- * InstancedMesh.boundingBox; FittedInstances keeps both measures tight.)
+ * Bounds exactly as the runtime's framing measures them (Picker.subtreeBounds,
+ * used for entity screenshots): each visible object's runtime `objectBox` ×
+ * matrixWorld — geometry.boundingBox for plain meshes, and for an InstancedMesh
+ * its all-instances box (recomputed from geometry box × instance matrices).
+ * Text stubs are skipped (their real troika bounds come from the text layout).
  */
 export function pickerBounds(root: THREE.Object3D): THREE.Box3 {
   root.updateWorldMatrix(true, true);
   const out = new THREE.Box3();
   const visit = (o: THREE.Object3D) => {
     if (!o.visible) return;
-    const g = (o as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
-    if (g?.attributes?.position && !(o instanceof FakeText)) {
-      if (!g.boundingBox) g.computeBoundingBox();
-      if (g.boundingBox && !g.boundingBox.isEmpty()) out.union(g.boundingBox.clone().applyMatrix4(o.matrixWorld));
+    if (!(o instanceof FakeText)) {
+      const b = objectBox(o);
+      if (b) out.union(b.clone().applyMatrix4(o.matrixWorld));
     }
     o.children.forEach(visit);
   };
