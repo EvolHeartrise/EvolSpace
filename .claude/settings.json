@@ -53,6 +53,20 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/scripts/hooks/ask-question.mjs"
+            ],
+            "timeout": 150,
+            "statusMessage": "Question shown in EvolSpace: answer there, or tap 'Answer in terminal' (falls back here after 2 min)"
+          }
+        ]
       }
     ],
     "Notification": [
