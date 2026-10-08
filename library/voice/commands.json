@@ -37,7 +37,8 @@
     "description": "Delete the entity being pointed at (or the selection).",
     "patterns": [
       "(delete|remove|trash|get rid of) (this|that|it)( (one|thing|widget|object|panel|entity))?",
-      "(delete|remove) (the )?select(ed|ion)( (one|thing|widget|object|entity))?"
+      "(delete|remove) (the )?select(ed|ion)( (one|thing|widget|object|entity))?",
+      "(delete|remove|trash)"
     ],
     "command": "delete",
     "args": { "entity": "$target" }

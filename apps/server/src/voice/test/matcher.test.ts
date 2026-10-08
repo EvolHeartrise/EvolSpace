@@ -94,6 +94,8 @@ describe('library/voice/commands.json', () => {
     ['Okay, undo please', 'undo'],
     ['Redo.', 'redo'],
     ['Delete this.', 'delete-target'],
+    ['Delete.', 'delete-target'],
+    ['Remove', 'delete-target'],
     ['Remove that widget', 'delete-target'],
     ['Claude, delete this', 'delete-target'],
     ['Duplicate that.', 'duplicate-target'],
