@@ -138,5 +138,15 @@
     ],
     "command": "broadcast",
     "args": { "name": "origin.recalibrate" }
+  },
+  {
+    "id": "github-show",
+    "description": "Show a BeatSaberRL issue/PR in the GitHub details card (github-item widget), no Claude round trip.",
+    "patterns": [
+      "(show|open|load|display)( me)?( the)?( details( for| of)?)?( github)? (issue|pr|pull request|pull)( number)? #?(?<n>\\d+)( details)?( please)?",
+      "(issue|pr|pull request)( number)? #?(?<n>\\d+)"
+    ],
+    "command": "channel.publish",
+    "args": { "channel": "github.bsrl.ctl.show", "value": "$n" }
   }
 ]
