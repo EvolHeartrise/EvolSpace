@@ -71,7 +71,7 @@ The SDK has its own venv (`uv sync` in this folder, Python 3.12; the
 ```
 cd python/evolspace
 uv sync
-.venv/Scripts/python -m pytest -q          # (Windows; bin/python elsewhere)
+.venv/bin/python -m pytest -q              # (.venv/Scripts/python on Windows)
 ```
 
 - `tests/test_codec.py` — frame layout, all dtypes, malformed frames, and a

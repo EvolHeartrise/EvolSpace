@@ -33,9 +33,10 @@ def bsrl_code_dir() -> Path:
     return Path(env).resolve() if env else repo_root() / "data" / "bsrl" / "python"
 
 
-#: BeatSaberRL repo (read-only; only `git archive` is ever run against it)
-BSRL_REPO = Path(os.environ.get("EVOL_BSRL_REPO", "D:/Git/BeatSaberRL"))
+#: BeatSaberRL repo (read-only; only `git archive` is ever run against it). Default: a sibling of this
+#: repo (D:/Git/BeatSaberRL next to D:/Git/EvolSpace, ~/git projects/BeatSaberRL on Linux).
+BSRL_REPO = Path(os.environ.get("EVOL_BSRL_REPO") or repo_root().parent / "BeatSaberRL")
 BSRL_BRANCH = "exp/bend7"
-#: Machine-specific default checkpoint (exp/bend7 leaf, ~5.9M params)
-DEFAULT_BSRL_CKPT = Path(os.environ.get(
-    "EVOL_BSRL_CKPT", "C:/Users/Flee/beat-arena-volume-backup/bend7/runs/bend7_cd1000/leaf_from_upd06000.pt"))
+#: Default checkpoint (exp/bend7 leaf, ~5.9M params) in the volume backup under the home folder
+DEFAULT_BSRL_CKPT = Path(os.environ.get("EVOL_BSRL_CKPT") or Path.home() / "beat-arena-volume-backup" / "bend7" / "runs"
+                         / "bend7_cd1000" / "leaf_from_upd06000.pt")
