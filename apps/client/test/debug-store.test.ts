@@ -306,9 +306,9 @@ describe('debug api', () => {
     const api = createApi('http://h:2', fakeFetch({ 'POST /api/scene/ops': () => new Response(JSON.stringify({ error: 'bad op', opIndex: 1 }), { status: 400 }) }, calls));
     const err = await api.ops([{ op: 'remove', id: 'x' }]).catch((e) => e as ApiError);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(400);
-    expect(err.message).toContain('bad op');
-    expect(err.body).toEqual({ error: 'bad op', opIndex: 1 });
+    expect((err as ApiError).status).toBe(400);
+    expect((err as ApiError).message).toContain('bad op');
+    expect((err as ApiError).body).toEqual({ error: 'bad op', opIndex: 1 });
   });
 
   it('decodes tensor channels and encodes tensor publishes', async () => {

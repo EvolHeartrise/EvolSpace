@@ -215,6 +215,15 @@ describe('pose recorder reconnects', () => {
     rec.onDisconnect('c-1');
     await expect(p).rejects.toThrow(/did not come back/);
   });
+
+  it('derives and saves from pre-sampled frames without a headset', async () => {
+    const rec = new PoseRecorder({ posesDir: dir, primaryClient: () => null, send: () => { throw new Error('no round trip expected'); }, loadInput: derive });
+    const pose = await rec.record({ name: 'desk-fist', hand: 'right', frames: [{ 'curl.index': 0.9 }, { 'curl.index': 0.95 }] });
+    expect(pose).toMatchObject({ id: 'desk-fist', hand: 'right', source: 'recorded' });
+    expect(existsSync(path.join(dir, 'desk-fist.json'))).toBe(true);
+    await expect(rec.record({ name: 'bad', hand: 'right', frames: [] })).rejects.toThrow(/non-empty array/);
+    await expect(rec.record({ name: 'bad', hand: 'right', frames: [{ 'curl.index': 'x' }] as never })).rejects.toThrow(/feature objects/);
+  });
 });
 
 describe('event cursors from a previous server run', () => {

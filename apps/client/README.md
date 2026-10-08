@@ -69,6 +69,17 @@ docks, right-click a tab to move/close; layout persisted in localStorage `evolsp
   links, parent/anchor/tags/visible/locked/interactions, raw JSON). Every edit is a scene op
   (source `user`, one undo group per gesture). Stubs (other components fill them): widgets, hands,
   view, links, channels, events, agent, sources, screenshots.
+- **Links** (bottom): every link as `name.port` / `#channel` → …; enable toggle, inline transform (compiled
+  while typing, previewed on the live value), live source value with a pulse when a value passes, link
+  errors from `client.error` events, filter, delete, click an endpoint to select/frame it (or open the
+  channel); **New link** form (entity + port from the manifest or a channel, loose type check) → `link.add`.
+- **Widgets** (left): catalog with thumbnails, version, instance count, build status (tab badge = build
+  errors); details: description, error, props/inputs/outputs, instances, recent errors; Spawn (in front of
+  the camera, selected), Rebuild, render thumbnail (mirror; only on click), copy source path.
+- **Channels** (bottom): live list (polled only while open; rate from seq deltas, virtualized), filter;
+  selected channel is subscribed over WS via the runtime ChannelHub (released on close): JSON tree, tensor
+  stats (min/max/mean/std/NaN) + sparkline (1-D) / heatmap (2-D, diverging when signed; 3-D+ with slice
+  sliders), rolling sparkline for numbers, quick slider/toggle/text controls, JSON publish (PUT), delete, copy.
 
 ### Extending it (contracts in `src/debug/types.ts`)
 

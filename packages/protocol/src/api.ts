@@ -62,7 +62,8 @@
 //                                              errors: skipped files (or dangling pose refs); warnings: loaded but suspicious
 //                                              (unknown feature names, bad binding hand values, ...). Each reload also
 //                                              records a 'gestures.load' event.
-//   POST   /api/gestures/record {name, hand, seconds?, countdown?, description?} -> PoseDef (saved to library/poses/<name>.json)
+//   POST   /api/gestures/record {name, hand, seconds?, countdown?, description?, frames?} -> PoseDef (saved to library/poses/<name>.json;
+//                                              with frames: HandFeatures[] the pose is derived from them directly, no headset needed)
 //   GET    /api/voice/commands                 -> VoiceCommand[]
 //   POST   /api/voice/simulate {text, context?} -> { route, command? }   (test fast-path routing without audio)
 //

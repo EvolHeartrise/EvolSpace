@@ -17,6 +17,11 @@ export interface RecordRequest {
   seconds?: number;
   countdown?: number;
   description?: string;
+  /**
+   * Pre-sampled feature frames (e.g. from the desktop debug page's simulated hands).
+   * When given, no headset round trip happens: the PoseDef is derived from these directly.
+   */
+  frames?: HandFeatures[];
 }
 
 interface Pending {
@@ -52,6 +57,8 @@ export class PoseRecorder {
   async record(req: RecordRequest): Promise<PoseDef> {
     if (typeof req.name !== 'string' || !isSafeName(req.name)) throw new RecordError(`"name" must be a file-safe pose id like "thumbs-up"`);
     if (!['left', 'right', 'either'].includes(req.hand)) throw new RecordError(`"hand" must be 'left', 'right' or 'either'`);
+    if (req.frames !== undefined) return this.save(req, await this.fromFrames(req.frames));
+    if (req.frames !== undefined) return this.save(req, await this.fromFrames(req.frames));
     const seconds = clamp(req.seconds ?? 3, 0.5, 30);
     const countdown = clamp(req.countdown ?? 3, 0, 10);
     const clientId = this.d.primaryClient();
@@ -70,7 +77,19 @@ export class PoseRecorder {
       this.d.send(clientId, { type: 'pose.record', requestId, name: req.name, hand: req.hand, seconds, countdown });
     });
     if (!result.frames.length) throw new RecordError('the recording contained no tracked-hand samples (was the hand visible?)', 422);
-    const pose = derive.derivePose(result.frames, { id: req.name, hand: req.hand, description: req.description ?? `Recorded pose '${req.name}'` });
+    return this.save(req, { derive, frames: result.frames });
+  }
+
+  private async fromFrames(frames: unknown): Promise<{ derive: Pick<InputModule, 'derivePose'>; frames: HandFeatures[] }> {
+    const ok = Array.isArray(frames) && frames.length > 0 && frames.length <= 3000 && frames.every((f) =>
+      f !== null && typeof f === 'object' && !Array.isArray(f) && Object.values(f as object).every((v) => typeof v === 'number'));
+    if (!ok) throw new RecordError('"frames" must be a non-empty array (max 3000) of feature objects {name: number}');
+    const derive = await this.d.loadInput().catch((e: Error) => { throw new RecordError(`pose derivation unavailable: ${e.message}`, 503); });
+    return { derive, frames: frames as HandFeatures[] };
+  }
+
+  private async save(req: RecordRequest, r: { derive: Pick<InputModule, 'derivePose'>; frames: HandFeatures[] }): Promise<PoseDef> {
+    const pose = r.derive.derivePose(r.frames, { id: req.name, hand: req.hand, description: req.description ?? `Recorded pose '${req.name}'` });
     const saved: PoseDef = { ...pose, id: req.name, source: 'recorded' };
     await atomicWrite(path.join(this.d.posesDir, `${req.name}.json`), JSON.stringify(saved, null, 2) + '\n');
     return saved;
