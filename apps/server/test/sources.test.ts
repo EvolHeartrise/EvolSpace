@@ -124,7 +124,7 @@ describe('command resolution', () => {
     expect(r.cwd).toBe(path.join(proj, 'src'));
     expect(r.env.PYTHONUNBUFFERED).toBe('1');
     expect(resolvePython('{python:python/stt}', { cwd: sourceDir, sourceDir, repoRoot: repo })).toBe(path.join(proj, ...venvExe));
-    expect(resolvePython('{python}', { cwd: sourceDir, sourceDir, repoRoot: repo })).toBe('python');
+    expect(resolvePython('{python}', { cwd: sourceDir, sourceDir, repoRoot: repo })).toBe(process.platform === 'win32' ? 'python' : 'python3');
     expect(() => resolvePython('{python:python/nope}', { cwd: sourceDir, sourceDir, repoRoot: repo })).toThrow(/uv venv/);
     rmDir(repo);
   });
