@@ -10,6 +10,8 @@ export interface ReplayMeta {
   difficulty: string;
   model: string;
   pp: number;
+  /** Leaderboard of `pp` ('SS', 'BL'; empty = best of them). */
+  ppSource?: string;
   score: number;
   ticks: number;
   hz: number;
@@ -147,4 +149,9 @@ export function formatScore(score: number): string {
 export function formatClock(s: number): string {
   const t = Math.max(0, Math.floor(s));
   return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+}
+
+/** " · 1079 pp SS" (empty without pp). */
+export function ppLabel(m: ReplayMeta): string {
+  return m.pp > 0 ? ` · ${Math.round(m.pp)} pp${m.ppSource ? ` ${m.ppSource}` : ''}` : '';
 }

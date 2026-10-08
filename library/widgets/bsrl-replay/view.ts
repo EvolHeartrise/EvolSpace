@@ -13,7 +13,7 @@ import { sharedGeometry, shadedGeometry, ownMaterial, hitMaterial } from '../../
 import { SegmentMath } from '../../shared/segments.ts';
 import { makeText, type Text } from '../../shared/text.ts';
 import { BodyFK, F, poseAt } from './fk.ts';
-import { C, H, KIND, OUTCOME, REASONS, lowerBound, gradeOf, formatScore, type Replay } from './data.ts';
+import { C, H, KIND, OUTCOME, REASONS, lowerBound, gradeOf, formatScore, ppLabel, type Replay } from './data.ts';
 
 type Three = typeof THREE;
 
@@ -245,8 +245,7 @@ export class ReplayView {
     for (const p of this.popups) p.visible = false;
     if (rep) {
       const m = rep.meta;
-      const pp = m.pp > 0 ? ` · ${Math.round(m.pp)} pp` : '';
-      this.hudTitle.set(`${m.song} · ${m.difficulty}${m.model ? ` · ${m.model}` : ''}${pp}`);
+      this.hudTitle.set(`${m.song} · ${m.difficulty}${m.model ? ` · ${m.model}` : ''}${ppLabel(m)}`);
     } else this.hudTitle.set('');
     for (const im of [this.cyl, this.sph, this.boxes, this.sabers, this.notes, this.arrows, this.dots, this.bombs, this.walls, this.debris, this.marks]) im.count = 0;
     for (const t of this.trails) t.visible = false;

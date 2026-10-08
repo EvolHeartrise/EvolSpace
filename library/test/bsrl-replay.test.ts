@@ -55,7 +55,7 @@ it('renders a replay: HUD, notes, aftermath, control bar', async () => {
   publishReplay(h);
   h.input('seek', 0.2);
   h.frame();
-  expect(h.hasText('#1/490 Felis · Hard · 1819 pp')).toBe(true);
+  expect(h.hasText('v65 #1/490 · Felis · Hard · 1819 pp')).toBe(true);
   expect(h.hasText('Felis · Hard · v65 · 1819 pp')).toBe(true);
   const counts = () => drawn(h).map((m) => m.count);
   expect(counts().some((c) => c >= 2)).toBe(true); // body parts, notes
