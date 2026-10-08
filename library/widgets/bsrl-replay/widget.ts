@@ -14,7 +14,7 @@ import { makeText, type Text } from '../../shared/text.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { toScalar } from '../../shared/tensor.ts';
 import { STYLE } from '../../shared/style.ts';
-import { ReplayStore, KEYS, C, OUTCOME, formatClock, type Replay } from './data.ts';
+import { ReplayStore, KEYS, C, OUTCOME, formatClock, ppLabel, type Replay } from './data.ts';
 import { ReplayView } from './view.ts';
 
 interface Props extends Record<string, unknown> {
@@ -228,9 +228,9 @@ const definition: WidgetDefinition<Props> = {
       if (title) {
         if (r) {
           const m = r.meta;
-          const idx = m.index >= 0 ? `#${m.index + 1}/${m.total} ` : '';
+          const idx = m.index >= 0 ? `${m.model} #${m.index + 1}/${m.total} · ` : '';
           const loading = store.status.startsWith('Loading') || store.status.startsWith('Error') ? `  (${store.status})` : '';
-          title.set(`${idx}${m.song} · ${m.difficulty}${m.pp > 0 ? ` · ${Math.round(m.pp)} pp` : ''}${loading}`);
+          title.set(`${idx}${m.song} · ${m.difficulty}${ppLabel(m)}${loading}`);
         } else title.set(store.status || 'Waiting for replay data (bsrl-replay source)…');
       }
       if (r && playhead) playhead.position.x = -SEEK_W / 2 + (time / r.duration) * SEEK_W;

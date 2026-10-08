@@ -1,7 +1,8 @@
 // BeatSaberRL replay source for the `bsrl-replay` widget. Decodes BeatSaberRL v10 replays (format-2
 // .rpl.gz, the published viewer's format, or legacy JSONL v10) and publishes them as tensors:
 //
-//   <P>.catalog   [{id, song, difficulty, pp, score, model}]   published replays, best pp first
+//   <P>.catalog   {model, sort, models, replays: [{id, song, difficulty, pp, score}]}  the active model's
+//                 published replays, best pp first
 //   <P>.q         f32 [T, 36]  per tick: root pos xyz, root quat wxyz, 29 joint angles (world: x right, y up, notes from +z)
 //   <P>.chart     f32 [N, 12]  t x y color angle speed any kind resolveTick outcome points reason
 //                              outcome 0 good 1 bad 2 miss 3 bomb -1 none; reason = EVENT_REASONS index
@@ -11,7 +12,9 @@
 //   <P>.meta      {id, song, difficulty, model, pp, score, ticks, hz, handleLen, trackAnchor, index, total, loadId}
 //                 published LAST: a consistent set is present once meta.loadId changes.
 //   <P>.status    short text
-// Control: <P>.ctl.load = "<id>" | <index> | {id} | {index} | {path} | {cmd: "next"|"prev", nonce}
+// Control: <P>.ctl.load = "<id>" | <index> | {id} | {index} | {path} | {cmd: "next"|"prev", nonce},
+//   objects optionally with model ("v61": switch to that model's store) and sort ("max" | "ss" | "bl":
+//   order by best pp, ScoreSaber pp or BeatLeader pp). An id from another model switches to it.
 //
 // Mirrors BeatSaberRL viz/app/src/lib/replay.js (decodeReplay, replayFromParts) and hud.js (the
 // scoring walk). BeatSaberRL itself is never touched: replays come from replays.flee.systems
@@ -89,22 +92,33 @@ function follow(channel, cb) {
 
 // ---- catalog -------------------------------------------------------------------------------------
 
-function loadCatalog() {
-  let m;
-  try { m = JSON.parse(fs.readFileSync(MANIFEST, 'utf8')); } catch (e) {
+let manifest = null;
+function readManifest() {
+  try { manifest = JSON.parse(fs.readFileSync(MANIFEST, 'utf8')); } catch (e) {
     console.error(`no replay manifest at ${MANIFEST}: ${e}`);
-    return [];
+    manifest = { models: {} };
   }
-  const models = Object.keys(m.models ?? {});
-  const model = MODEL || models[models.length - 1];
-  const entry = m.models?.[model];
-  if (!entry) { console.error(`model ${model} not in manifest (have ${models.join(', ')})`); return []; }
+  return manifest;
+}
+const modelIds = () => Object.keys(manifest?.models ?? {});
+
+/** One model's replays, best first by `sort`: 'max' (best of the leaderboards), 'ss' (ScoreSaber pp) or 'bl' (BeatLeader pp). */
+function loadCatalog(model, sort = 'max') {
+  const entry = manifest?.models?.[model];
+  if (!entry) throw new Error(`model ${model} is not in the replay store (have ${modelIds().join(', ')})`);
   const rows = Object.entries(entry.replays).map(([id, r]) => {
     const pps = Object.values(r.pp ?? {}).filter(Number.isFinite);
-    return { id, song: r.song ?? id, difficulty: r.difficulty ?? '', pp: pps.length ? Math.max(...pps) : 0, score: r.score ?? 0, model, file: r.file };
+    const pp = sort === 'max' ? (pps.length ? Math.max(...pps) : 0) : (r.pp?.[sort] ?? 0);
+    return { id, song: r.song ?? id, difficulty: r.difficulty ?? '', pp, score: r.score ?? 0, model, file: r.file };
   });
   rows.sort((a, b) => b.pp - a.pp || a.song.localeCompare(b.song));
-  return rows;
+  return { model, sort, rows };
+}
+
+/** The model whose store holds replay `id`, or null. */
+function modelOf(id) {
+  for (const m of modelIds()) if (manifest.models[m].replays?.[id]) return m;
+  return null;
 }
 
 async function fetchReplay(row) {
@@ -299,8 +313,25 @@ function analyze(rep) {
 
 // ---- load + publish ------------------------------------------------------------------------------
 
-const catalog = loadCatalog();
+readManifest();
+let active = { model: '', sort: 'max', rows: [] };
+try { active = loadCatalog(MODEL || modelIds().at(-1)); } catch (e) { console.error(String(e)); }
 let current = -1;
+
+async function publishCatalog() {
+  await publishJson(`${P}.catalog`, {
+    model: active.model, sort: active.sort, models: modelIds(),
+    replays: active.rows.map(({ id, song, difficulty, pp, score }) => ({ id, song, difficulty, pp, score })),
+  });
+}
+
+/** Switch the active catalog (model and/or sort order). */
+async function useCatalog(model, sort) {
+  if (model === active.model && sort === active.sort) return;
+  active = loadCatalog(model, sort);
+  current = -1;
+  await publishCatalog();
+}
 let loadId = 0;
 let busy = Promise.resolve();
 let requested = false;
@@ -311,8 +342,16 @@ async function load(target) {
     bytes = fs.readFileSync(target.path);
     row = { id: path.basename(target.path), song: path.basename(target.path), difficulty: '', pp: 0, score: 0, model: 'local' };
   } else {
+    const model = target.model ?? (target.id && !active.rows.some((r) => r.id === target.id) ? modelOf(target.id) : null) ?? active.model;
+    await useCatalog(model, target.sort ?? (model === active.model ? active.sort : 'max'));
+    const catalog = active.rows;
+    if (target.cmd) {
+      const n = catalog.length;
+      if (!n) return;
+      target = { index: ((current < 0 ? 0 : current) + (target.cmd === 'next' ? 1 : -1) + n) % n };
+    }
     idx = target.index ?? catalog.findIndex((r) => r.id === target.id);
-    if (!(idx >= 0 && idx < catalog.length)) throw new Error(`no replay ${JSON.stringify(target)} (catalog has ${catalog.length})`);
+    if (!(idx >= 0 && idx < catalog.length)) throw new Error(`no replay ${JSON.stringify(target)} in ${active.model} (${catalog.length} replays)`);
     row = catalog[idx];
     await status(`Loading ${row.song}…`);
     bytes = await fetchReplay(row);
@@ -335,7 +374,8 @@ async function load(target) {
     model: rep.header.model ?? row.model, pp: row.pp, score: row.score,
     ticks: rep.T, hz: rep.hz, handleLen: rep.header.config?.handle_len ?? 0,
     trackAnchor: rep.header.track_anchor ?? null, notes: N, walls: walls.length,
-    index: idx, total: catalog.length, loadId: `${process.pid}-${++loadId}`,
+    ppSource: row.model === 'local' ? '' : active.sort === 'max' ? '' : active.sort.toUpperCase(),
+    index: idx, total: active.rows.length, loadId: `${process.pid}-${++loadId}`,
   });
   await status(`${map.song ?? row.song} · ${rep.T} ticks · ${N} notes`);
 }
@@ -345,13 +385,15 @@ function request(v) {
   if (typeof v === 'string' && v) target = { id: v };
   else if (typeof v === 'number') target = { index: v };
   else if (v && typeof v === 'object') {
-    if (v.cmd === 'next' || v.cmd === 'prev') {
-      const n = catalog.length;
-      if (!n) return;
-      target = { index: ((current < 0 ? 0 : current) + (v.cmd === 'next' ? 1 : -1) + n) % n };
-    } else if (typeof v.id === 'string') target = { id: v.id };
-    else if (Number.isInteger(v.index)) target = { index: v.index };
-    else if (typeof v.path === 'string') target = { path: v.path };
+    if (typeof v.path === 'string') target = { path: v.path };
+    else {
+      target = {};
+      if (v.cmd === 'next' || v.cmd === 'prev') target.cmd = v.cmd;
+      else if (typeof v.id === 'string') target.id = v.id;
+      else target.index = Number.isInteger(v.index) ? v.index : 0;
+      if (typeof v.model === 'string') target.model = v.model;
+      if (['max', 'ss', 'bl'].includes(v.sort)) target.sort = v.sort;
+    }
   }
   if (!target) return;
   requested = true;
@@ -359,7 +401,7 @@ function request(v) {
 }
 
 async function main() {
-  await publishJson(`${P}.catalog`, catalog.map(({ id, song, difficulty, pp, score, model }) => ({ id, song, difficulty, pp, score, model })));
+  await publishCatalog();
   // The value already on the control channel when we start: honour an absolute pick, never replay
   // a relative one (next/prev). Later values (by seq) are requests.
   let lastSeq = 0;
@@ -380,6 +422,6 @@ async function main() {
     request(v);
   });
   // Nothing requested yet: the best-pp replay.
-  setTimeout(() => { if (!requested && catalog.length) request({ index: 0 }); }, 1500);
+  setTimeout(() => { if (!requested && active.rows.length) request({ index: 0 }); }, 1500);
 }
 main().catch((e) => { console.error(e); process.exit(1); });
