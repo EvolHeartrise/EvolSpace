@@ -3,6 +3,6 @@
   "command": "node",
   "args": ["scoresaber.mjs", "--top", "10", "--prefix", "scoresaber", "--every", "300"],
   "cwd": ".",
-  "autostart": true,
+  "autostart": false,
   "restart": true
 }
