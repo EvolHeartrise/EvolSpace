@@ -161,6 +161,16 @@ describe('channels over HTTP / SSE / WS', () => {
     await a.close(); await b.close();
   });
 
+  it('a channel.publish COMMAND reaches the requesting no-echo client (voice fast path)', async () => {
+    const a = await TestClient.connect(srv.wsUrl, { role: 'xr', wantPrimary: false, capabilities: ['no-echo'] });
+    a.send({ type: 'channel.subscribe', channels: ['cmd.echo'] });
+    await new Promise((r) => setTimeout(r, 50));
+    const got = a.next('channel.value', (m) => m.channel === 'cmd.echo');
+    a.send({ type: 'command', name: 'channel.publish', args: { channel: 'cmd.echo', value: '10' } });
+    expect((await got).value).toBe('10');
+    await a.close();
+  });
+
   it('a slow WS consumer gets the latest tensor, not a backlog', async () => {
     const slow = await TestClient.connect(srv.wsUrl, { role: 'xr', wantPrimary: false });
     const sub = slow.next('channel.value').catch(() => null); // no JSON expected; just ensure the subscribe went through
