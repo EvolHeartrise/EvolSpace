@@ -1,0 +1,8 @@
+{
+  "description": "Claude plan usage limits (5-hour session + weekly windows, % used and reset times) for the claude-usage widget, published on claude.usage. Fed by ~/.claude/statusline-command.sh, which saves Claude Code's status-line rate_limits to ~/.cache/evolspace/claude-usage.json.",
+  "command": "node",
+  "args": ["usage.mjs", "--channel", "claude.usage"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}
