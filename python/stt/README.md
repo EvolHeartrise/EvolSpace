@@ -115,6 +115,9 @@ uv sync                    # installs faster-whisper, aiohttp, CUDA 12 cuBLAS/cu
 .venv\Scripts\python.exe -m pytest -m slow -s      # real model + SAPI speech, prints a latency table
 ```
 
+Linux/macOS: the same with `.venv/bin/python` (CPU fallback without an NVIDIA GPU). The `slow` speech tests and
+`bench/` synthesize speech with Windows SAPI, so they skip/need Windows.
+
 ## Layout
 
 - `evol_stt/server.py`: aiohttp app, `/health` and `/transcribe`. The model

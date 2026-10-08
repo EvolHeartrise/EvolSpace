@@ -149,6 +149,9 @@ class FakeEvol:
 
         class H(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+            # TCP_NODELAY like Node. Headers and body go out as separate writes, so with Nagle
+            # on, Linux's delayed ACK stalls every keep-alive response by ~40 ms.
+            disable_nagle_algorithm = True
 
             def log_message(self, *a: Any) -> None:  # silence
                 pass

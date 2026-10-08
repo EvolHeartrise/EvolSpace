@@ -29,16 +29,17 @@ python/evolinterp/
 ```
 cd python/evolinterp
 uv sync                                   # Python 3.12 venv in .venv with CPU torch, sklearn, evolspace (editable)
-.venv/Scripts/python -m evolinterp setup-bsrl   # git archive exp/bend7 python/ -> data/bsrl (read-only on D:/Git/BeatSaberRL)
+.venv/bin/python -m evolinterp setup-bsrl   # (.venv/Scripts/python on Windows) git archive exp/bend7 python/ -> data/bsrl
 ```
 
-`setup-bsrl` runs `git -C D:/Git/BeatSaberRL archive exp/bend7 python` and
+`setup-bsrl` runs `git -C <BeatSaberRL> archive exp/bend7 python` (read-only; `$EVOL_BSRL_REPO`, default: the
+`BeatSaberRL` folder next to this repo, e.g. `D:/Git/BeatSaberRL`) and
 extracts into `data/bsrl/python` — it never touches the BSRL working tree or
 branches. No Rust, CUDA or gymnasium is needed: `beat_arena_env` is stubbed so
 only `beat_arena_env/constants.py` loads (its `__init__` imports the Rust sim).
 
 Paths (all overridable): checkpoint `$EVOL_BSRL_CKPT` (default
-`C:/Users/Flee/beat-arena-volume-backup/bend7/runs/bend7_cd1000/leaf_from_upd06000.pt`),
+`~/beat-arena-volume-backup/bend7/runs/bend7_cd1000/leaf_from_upd06000.pt`; on Windows `~` is `C:/Users/<you>`),
 code `$EVOL_BSRL_CODE`, artifacts `$EVOL_INTERP_DATA` (default `data/interp`).
 
 ## Running
@@ -232,8 +233,8 @@ block index or label (`"b3"`).
 
 ```
 cd python/evolinterp
-.venv/Scripts/python -m pytest -q                 # ~1 min; BSRL tests skip without code/checkpoint
-.venv/Scripts/python -m pytest -q -m "not server" # skip the end-to-end real-server test
+.venv/bin/python -m pytest -q                     # ~1 min (.venv/Scripts/python on Windows); BSRL tests skip without code/checkpoint
+.venv/bin/python -m pytest -q -m "not server"     # skip the end-to-end real-server test
 ```
 
 - `test_toy.py` — instrumented forward == model forward (fused SDPA), attention
