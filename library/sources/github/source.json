@@ -1,0 +1,8 @@
+{
+  "description": "GitHub issues + pull requests of EvolHeartrise/BeatSaberRL via the gh CLI, refreshed every 5 min, as item-list rows on github.bsrl.issues and github.bsrl.prs. Another repo: --repo owner/name --prefix github.<x>.",
+  "command": "node",
+  "args": ["github.mjs", "--repo", "EvolHeartrise/BeatSaberRL", "--prefix", "github.bsrl", "--name", "BeatSaberRL", "--every", "300"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}
