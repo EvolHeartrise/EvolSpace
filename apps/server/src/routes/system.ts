@@ -1,6 +1,6 @@
 // Health, events, agent I/O, commands, user, screenshots, gestures, voice, sources.
 import path from 'node:path';
-import type { Handedness, ScreenshotRequest } from '@evolspace/protocol';
+import type { HandFeatures, Handedness, ScreenshotRequest } from '@evolspace/protocol';
 import type { Router } from '../http/router.ts';
 import { HttpError, reply } from '../http/router.ts';
 import { readJsonObject } from '../http/body.ts';
@@ -115,6 +115,7 @@ export function systemRoutes(r: Router, s: Services): void {
         seconds: typeof b.seconds === 'number' ? b.seconds : undefined,
         countdown: typeof b.countdown === 'number' ? b.countdown : undefined,
         description: typeof b.description === 'string' ? b.description : undefined,
+        frames: b.frames === undefined ? undefined : (b.frames as HandFeatures[]),
       });
     } catch (e) { return passStatus(e); }
   });

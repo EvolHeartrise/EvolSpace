@@ -197,7 +197,7 @@ export function createApi(base: string, fetchImpl: FetchLike = (i, init) => fetc
 
     // ------------------------------------------------------------ gestures & voice
     gestures: () => json<GesturesInfo>('GET', '/api/gestures'),
-    recordGesture: (body: { name: string; hand: 'left' | 'right' | 'either'; seconds?: number; countdown?: number; description?: string }) =>
+    recordGesture: (body: { name: string; hand: 'left' | 'right' | 'either'; seconds?: number; countdown?: number; description?: string; frames?: Array<Record<string, number>> }) =>
       json<PoseDef>('POST', '/api/gestures/record', body),
     voiceCommands: () => json<VoiceCommand[]>('GET', '/api/voice/commands'),
     simulateVoice: (text: string, context?: Record<string, unknown>) =>
