@@ -1,0 +1,8 @@
+{
+  "description": "BeatSaberRL replays for the bsrl-replay widget: lists the published replays (local replays-site manifest, latest model, best pp first), downloads them from replays.flee.systems (cached in data/bsrl-replays), decodes format-2 .rpl.gz / JSONL v10 and publishes replay.q/chart/walls/hud/torque tensors + replay.meta. Pick with replay.ctl.load = id | index | {cmd:'next'|'prev'} | {path}.",
+  "command": "node",
+  "args": ["replay.mjs", "--prefix", "replay"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}

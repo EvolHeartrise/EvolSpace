@@ -1,0 +1,8 @@
+{
+  "description": "Current weather for Delta, BC from Open-Meteo (no key), refreshed every 10 min: panel markup on weather.delta.body, raw conditions on weather.delta.current. Location via --name/--lat/--lon/--tz/--prefix args.",
+  "command": "node",
+  "args": ["weather.mjs", "--name", "Delta, BC", "--lat", "49.0847", "--lon", "-123.0586", "--tz", "America/Vancouver", "--prefix", "weather.delta", "--every", "600"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}
