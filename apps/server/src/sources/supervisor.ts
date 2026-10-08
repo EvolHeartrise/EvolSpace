@@ -11,6 +11,7 @@ import { atomicWriteSync, readJson, readJsonOr } from '../util/fs.ts';
 import { keyedDebounce } from '../util/timing.ts';
 import { imageOf, killPidTree, killTree, processImage, resolveCommand, spawnOptions } from './process.ts';
 import type { Logger } from '../log.ts';
+import { defaultSecretsFile, ensureSecretsFile, redact, resolveSecrets, SECRET_NAME_RE } from './secrets.ts';
 
 export interface SourceInfo extends SourceStatus {
   description: string;
@@ -40,6 +41,8 @@ export interface SupervisorOptions {
    * otherwise e.g. an old STT process keeps its port and the new one crash-loops.
    */
   pidFile?: string;
+  /** Secrets file (KEY=value lines) for sources that declare "secrets". Default ~/.config/evolspace/secrets.env. */
+  secretsFile?: string;
 }
 
 interface PidRecord { pid: number; image: string; startedAt: number }
@@ -63,6 +66,10 @@ interface State {
   exited: Promise<void> | null;
   /** Executable image of the running child (pid-file sanity check). */
   image?: string;
+  /** Declared secrets missing at the last start attempt. */
+  missingSecrets?: string[];
+  /** Secret values handed to the running child (redacted from its log). */
+  secretValues: string[];
 }
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -153,6 +160,8 @@ export class SourceSupervisor {
       restarts: s.restarts,
       ...(s.lastExit ? { lastExit: s.lastExit } : {}),
       logTail: s.logTail.slice(-50),
+      ...(s.spec?.secrets?.length ? { secrets: [...s.spec.secrets] } : {}),
+      ...(s.missingSecrets?.length ? { missingSecrets: [...s.missingSecrets] } : {}),
       ...(s.error ? { error: s.error } : {}),
     };
   }
@@ -163,7 +172,7 @@ export class SourceSupervisor {
     const file = path.join(dir, 'source.json');
     let s = this.states.get(id);
     if (!s) {
-      s = { id, dir, spec: null, specText: '', child: null, wanted: false, restarts: 0, failures: 0, startedAt: 0, logTail: [], partial: { out: '', err: '' }, backoff: null, exited: null };
+      s = { id, dir, spec: null, specText: '', child: null, wanted: false, restarts: 0, failures: 0, startedAt: 0, logTail: [], partial: { out: '', err: '' }, backoff: null, exited: null, secretValues: [] };
       this.states.set(id, s);
     }
     if (!existsSync(file)) {
@@ -176,6 +185,9 @@ export class SourceSupervisor {
       const spec = await readJson<SourceSpec>(file);
       if (typeof spec.command !== 'string' || !spec.command) throw new Error(`source.json needs "command" (e.g. "{python}" or "node")`);
       if (spec.args !== undefined && !Array.isArray(spec.args)) throw new Error(`source.json "args" must be an array of strings`);
+      if (spec.secrets !== undefined && (!Array.isArray(spec.secrets) || !spec.secrets.every((n) => typeof n === 'string' && SECRET_NAME_RE.test(n)))) {
+        throw new Error(`source.json "secrets" must be an array of environment variable names, e.g. ["OPENWEATHER_API_KEY"]`);
+      }
       s.spec = spec; s.specText = text; delete s.error;
       return true;
     } catch (e) {
@@ -194,7 +206,10 @@ export class SourceSupervisor {
     const text = s.partial[stream] + chunk.toString('utf8');
     const lines = text.split(/\r?\n/);
     s.partial[stream] = lines.pop() ?? '';
-    for (const l of lines) this.pushLog(s, stream === 'err' ? `! ${l}` : l);
+    for (const raw of lines) {
+      const l = s.secretValues.length ? redact(raw, s.secretValues) : raw;
+      this.pushLog(s, stream === 'err' ? `! ${l}` : l);
+    }
   }
 
   private spawn(s: State): void {
@@ -211,7 +226,26 @@ export class SourceSupervisor {
       this.pushLog(s, `[supervisor] ${s.error}`);
       return;
     }
-    this.pushLog(s, `[supervisor] start: ${cmd.command} ${cmd.args.join(' ')} (cwd ${path.relative(this.o.repoRoot, cmd.cwd) || '.'})`);
+    // secrets: read the file fresh at every start; only the declared names reach this child
+    s.secretValues = [];
+    delete s.missingSecrets;
+    const names = s.spec.secrets ?? [];
+    if (names.length) {
+      const file = this.o.secretsFile ?? defaultSecretsFile();
+      const sec = resolveSecrets(names, file);
+      for (const w of sec.warnings) { this.pushLog(s, `[supervisor] ${w}`); this.o.log.warn(`source '${s.id}': ${w}`); }
+      if (sec.missing.length) {
+        try { if (ensureSecretsFile(file)) this.pushLog(s, `[supervisor] created ${file} (private, with usage notes)`); } catch { /* read-only home: just report */ }
+        s.missingSecrets = sec.missing;
+        s.wanted = false; // no crash loop: it starts once the key is added and the source is started again
+        this.pushLog(s, `[supervisor] not started: missing secret${sec.missing.length > 1 ? 's' : ''} ${sec.missing.join(', ')}. Add ${sec.missing.map((n) => `${n}=…`).join(', ')} to ${file}, then start the source again.`);
+        this.o.log.warn(`source '${s.id}' not started: missing secret(s) ${sec.missing.join(', ')} (in ${file})`);
+        return;
+      }
+      Object.assign(cmd.env, sec.values);
+      s.secretValues = Object.values(sec.values);
+    }
+    this.pushLog(s, `[supervisor] start: ${cmd.command} ${cmd.args.join(' ')} (cwd ${path.relative(this.o.repoRoot, cmd.cwd) || '.'})${names.length ? ` with secrets ${names.join(', ')}` : ''}`);
     const child = spawn(cmd.command, cmd.args, { cwd: cmd.cwd, env: cmd.env, stdio: ['ignore', 'pipe', 'pipe'], ...spawnOptions, ...(cmd.shell ? { shell: true } : {}) });
     s.child = child;
     s.startedAt = Date.now();

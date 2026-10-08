@@ -39,6 +39,7 @@ Architecture and contracts: `ARCHITECTURE.md` and `packages/protocol/src` (the t
 | Interaction bindings | `library/interactions/*.json` | Standard grab/scale/PTT/select are just bindings here — change them on request. Scope order: entity > widget default > entity-default > global. |
 | Voice fast-path commands | `library/voice/commands.json` | Whole-utterance regexes → server commands. Everything else comes to you. |
 | Data sources (long-running drivers) | `library/sources/<id>/source.json` | Any language; publish to channels via HTTP (`PUT /api/channels/<name>`), the Python SDK (`python/evolspace`), or `channel_set`. |
+| API keys / secrets | `~/.config/evolspace/secrets.env` (outside the repo) | `KEY=value` lines the user edits. A source lists the names it needs in `source.json` `"secrets": ["X_API_KEY"]` and gets exactly those as env vars; without them it isn't started (status shows the missing names). Keys never go in widgets, channels, props, logs, git — and never ask the user to say/paste one. |
 | Interp | `python/evolinterp` | `interp-bsrl` / `interp-toy` sources publish the `interp.*` contract consumed by `resid-flow`. README covers experiments (ablations, probes, SAEs). |
 
 Live state (scene, links, channels, workspaces, screenshots, events) goes through MCP tools, not files.

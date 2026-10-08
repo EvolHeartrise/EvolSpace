@@ -61,6 +61,13 @@ export interface SourceSpec {
   autostart?: boolean;
   /** Restart on crash (with backoff). Default true. */
   restart?: boolean;
+  /**
+   * Names of secrets (API keys) this source needs, e.g. ["OPENWEATHER_API_KEY"]. Values come from
+   * the secrets file (~/.config/evolspace/secrets.env, KEY=value lines; EVOL_SECRETS_FILE overrides)
+   * and are passed to this source only, as environment variables. A source with a missing secret
+   * is not started: its status says which key to add.
+   */
+  secrets?: string[];
 }
 
 export interface SourceStatus {
@@ -71,4 +78,7 @@ export interface SourceStatus {
   lastExit?: { code: number | null; at: number };
   /** Tail of combined stdout/stderr. */
   logTail: string[];
+  /** Secret names the source declares, and those missing from the secrets file (never values). */
+  secrets?: string[];
+  missingSecrets?: string[];
 }

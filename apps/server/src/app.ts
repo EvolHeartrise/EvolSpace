@@ -195,6 +195,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     watch: config.watch,
     onExit: (d) => event('source.exit', d),
     pidFile: path.join(config.dataDir, 'sources.pids.json'),
+    secretsFile: config.secretsFile,
     ...(ov.sourceBackoffMs ? { backoffBaseMs: ov.sourceBackoffMs } : {}),
   });
 

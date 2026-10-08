@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'node:path';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { SourceSupervisor } from '../src/sources/supervisor.ts';
 import { resolveCommand, resolvePython } from '../src/sources/process.ts';
+import { parseSecrets, redact } from '../src/sources/secrets.ts';
 import { silentLogger } from '../src/log.ts';
 import { tempDir, rmDir, until, writeFiles } from './helpers.ts';
 
@@ -127,5 +128,53 @@ describe('command resolution', () => {
     expect(resolvePython('{python}', { cwd: sourceDir, sourceDir, repoRoot: repo })).toBe(process.platform === 'win32' ? 'python' : 'python3');
     expect(() => resolvePython('{python:python/nope}', { cwd: sourceDir, sourceDir, repoRoot: repo })).toThrow(/uv venv/);
     rmDir(repo);
+  });
+});
+
+describe('secrets', () => {
+  const PRINTER = `console.log('key', process.env.TEST_API_KEY ?? 'none', 'other', process.env.OTHER_KEY ?? 'none'); setInterval(() => {}, 1000);`;
+
+  it('parses dotenv-style files', () => {
+    const m = parseSecrets(['# comment', 'A=1', 'export B = two ', 'C="quoted # not a comment"', "D='single'", 'E=plain # trailing', 'bad line', '', 'F='].join('\n'));
+    expect(Object.fromEntries(m)).toEqual({ A: '1', B: 'two', C: 'quoted # not a comment', D: 'single', E: 'plain', F: '' });
+    expect(redact('token abcdef123 here', ['abcdef123'])).toBe('token [secret] here');
+  });
+
+  it('passes declared secrets only, refuses to start without them, redacts them from the log', async () => {
+    const dir = tempDir('evol-sec-');
+    const file = path.join(dir, 'conf', 'secrets.env');
+    writeFiles(dir, {
+      'sources/needs/source.json': JSON.stringify({ description: 'needs a key', command: 'node', args: ['p.cjs'], secrets: ['TEST_API_KEY'] }),
+      'sources/needs/p.cjs': PRINTER,
+      'sources/plain/source.json': JSON.stringify({ description: 'no secrets', command: 'node', args: ['p.cjs'] }),
+      'sources/plain/p.cjs': PRINTER,
+      'sources/badspec/source.json': JSON.stringify({ description: 'bad', command: 'node', secrets: ['not a name'] }),
+    });
+    const sup = new SourceSupervisor({ sourcesDir: path.join(dir, 'sources'), repoRoot: dir, baseUrl: () => 'http://127.0.0.1:1', log: silentLogger, watch: false, secretsFile: file });
+    await sup.init(false);
+    try {
+      // missing: not started, says which key and where; a private template file is created
+      const st = sup.start('needs');
+      expect(st.running).toBe(false);
+      expect(st.missingSecrets).toEqual(['TEST_API_KEY']);
+      expect(st.secrets).toEqual(['TEST_API_KEY']);
+      expect(st.logTail.join('\n')).toContain(`Add TEST_API_KEY=… to ${file}`);
+      expect(existsSync(file)).toBe(true);
+      if (process.platform !== 'win32') expect(statSync(file).mode & 0o077).toBe(0);
+      expect(sup.get('badspec')?.error).toMatch(/"secrets" must be an array/);
+
+      // present: passed to the declaring source only, and never shown in its log
+      writeFileSync(file, 'TEST_API_KEY=sk-test-1234567890\nOTHER_KEY=zzz-other-999\n', { mode: 0o600 });
+      sup.start('needs');
+      sup.start('plain');
+      await until(() => (sup.get('needs')?.logTail ?? []).some((l) => l.startsWith('key')) && (sup.get('plain')?.logTail ?? []).some((l) => l.startsWith('key')));
+      expect(sup.get('needs')!.logTail.find((l) => l.startsWith('key'))).toBe('key [secret] other none');
+      expect(sup.get('needs')!.missingSecrets).toBeUndefined();
+      expect(sup.get('plain')!.logTail.find((l) => l.startsWith('key'))).toBe('key none other none');
+      expect(JSON.stringify(sup.list())).not.toContain('sk-test-1234567890');
+    } finally {
+      await sup.close();
+      rmDir(dir);
+    }
   });
 });

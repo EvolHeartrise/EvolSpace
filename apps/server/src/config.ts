@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { PORTS } from '@evolspace/protocol';
 import { originsFromEnv } from './http/origin.ts';
+import { defaultSecretsFile } from './sources/secrets.ts';
 
 export interface ServerConfig {
   repoRoot: string;
@@ -33,6 +34,8 @@ export interface ServerConfig {
   wsHighWaterMark: number;
   /** Extra browser origins allowed to call the API / open /ws (EVOL_ALLOWED_ORIGINS, comma-separated). */
   allowedOrigins?: string[];
+  /** Secrets file for sources (EVOL_SECRETS_FILE; default ~/.config/evolspace/secrets.env). */
+  secretsFile?: string;
 }
 
 /** apps/server/src → repo root. */
@@ -77,6 +80,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     serverVersion: serverVersion(),
     wsHighWaterMark: 1 << 20,
     allowedOrigins: originsFromEnv(env),
+    secretsFile: defaultSecretsFile(env),
   };
 }
 
