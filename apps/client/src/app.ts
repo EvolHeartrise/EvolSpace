@@ -263,7 +263,7 @@ export class EvolClient {
       origin: () => this.origin.pose,
       raycast: (o, d) => this.host.raycast(o, d),
       runCommand: (name, args, phase) => { this.router.run(name, args, phase); },
-      ptt: (phase) => this.router.run('voice.ptt', undefined, phase),
+      ptt: (phase, oneshot) => this.router.run(oneshot ? 'voice.ptt.oneshot' : 'voice.ptt', undefined, phase),
       key: (code) => {
         if (code === 'KeyP') this.router.run('perf.toggle', undefined, 'start');
         if (code === 'KeyH') this.page?.toggleCollapsed();
@@ -311,6 +311,7 @@ export class EvolClient {
   private initCommands(): void {
     const r = this.router;
     r.register('voice.ptt', (_a, phase) => this.ptt.handle(phase));
+    r.register('voice.ptt.oneshot', (_a, phase) => this.ptt.handle(phase, true));
     r.register('session.mode', (args, phase) => {
       if (phase !== 'start') return;
       const mode = String(args?.mode ?? 'toggle');

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // EvolSpace MCP bridge entry point (stdio). Registered in the repo's .mcp.json as
 // "evolspace"; Claude Code starts it with: node --import tsx apps/mcp-bridge/src/main.ts
-// Env: EVOL_URL (default http://127.0.0.1:8787), EVOL_BRIDGE_LOG (debug|info|warn|error).
+// Env: EVOL_URL (default http://127.0.0.1:8787), EVOL_BRIDGE_LOG (debug|info|warn|error),
+// EVOL_BRIDGE_CHANNEL=0 disables the voice channel (one-off agents: apps/server/src/oneshot.ts).
 // stdout is the MCP wire — all logging goes to stderr.
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createLogger } from './log.ts';
@@ -23,7 +24,7 @@ function isPipeGone(err: unknown): boolean {
   return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || code === 'EOF';
 }
 
-const bridge = createBridge({ log });
+const bridge = createBridge({ log, channel: process.env.EVOL_BRIDGE_CHANNEL !== '0' });
 const transport = new StdioServerTransport();
 
 let closing = false;

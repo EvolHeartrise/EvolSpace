@@ -101,7 +101,8 @@ export type ClientMessage =
   /** Free-text request to the agent (from a widget's askAgent or a UI). */
   | { type: 'agent.ask'; text: string; context?: Record<string, unknown> }
   /** Push-to-talk lifecycle. Audio itself flows as binary AudioFrames between begin and end. */
-  | { type: 'voice.begin'; utteranceId: string; sampleRate: number; context: VoiceContext }
+  /** `agent: 'oneshot'` sends the utterance to a fresh one-off agent (no fast path, not the main Claude session). */
+  | { type: 'voice.begin'; utteranceId: string; sampleRate: number; context: VoiceContext; agent?: 'oneshot' }
   | { type: 'voice.end'; utteranceId: string; cancelled?: boolean }
   /** Run a named command on the server (undo, redo, screenshot, etc.) — used by fast-path & bindings. */
   | { type: 'command'; name: string; args?: Record<string, unknown> };

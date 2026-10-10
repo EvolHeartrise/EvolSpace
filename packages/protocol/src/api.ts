@@ -120,6 +120,7 @@ export interface SceneSummary {
 
 export type ServerEventType =
   | 'agent.ask'        // a request for Claude (voice that missed the fast path, widget askAgent, etc.)
+  | 'agent.oneshot'    // a one-off agent (headless claude -p, one-off PTT key) started / ended: {id, phase, text, ok?, result?, error?}
   | 'voice.utterance'  // every transcribed utterance + its route
   | 'widget.event'
   | 'pose.event'

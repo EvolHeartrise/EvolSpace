@@ -5,6 +5,7 @@
 //               ─► transcript echoed to the XR panel (kind 'heard')
 //               ─► fast path: library/voice/commands.json match → deps.runCommand
 //                  otherwise: deps.agentAsk(text, deictic context) → Claude
+//                  (voice.begin agent 'oneshot': no fast path, deps.oneshotAsk → a one-off agent)
 //               ─► voice.result to the originating client, voice.utterance event, status restored
 //                  (Claude's thinking/working if it was busy, else idle)
 //
@@ -64,6 +65,7 @@ interface Utterance {
   clientId: string;
   sampleRate: number;
   context: VoiceContext;
+  oneshot: boolean;
   chunks: Int16Array[];
   samples: number;
   maxSamples: number;
@@ -211,7 +213,7 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
   async function route(
     text: string,
     ctx: Record<string, unknown>,
-    meta: { clientId?: string; utteranceId: string; simulated?: boolean; extra?: Record<string, unknown> },
+    meta: { clientId?: string; utteranceId: string; simulated?: boolean; oneshot?: boolean; extra?: Record<string, unknown> },
   ): Promise<RouteOutcome> {
     await ready;
     deps.say(text, 'heard');
@@ -225,6 +227,17 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
       ...(ents.target ? { target: ents.target } : {}),
       ...meta.extra,
     };
+    if (meta.oneshot && deps.oneshotAsk) {
+      // The one-off key means "give this to a one-off agent": never a fast-path command.
+      sendResult(meta.clientId, { type: 'voice.result', utteranceId: meta.utteranceId, text, route: 'agent' });
+      deps.event('voice.utterance', { ...base, route: 'agent', agent: 'oneshot' });
+      deps.oneshotAsk(text, agentContext(ctx, ents, {
+        utteranceId: meta.utteranceId,
+        ...(meta.clientId ? { clientId: meta.clientId } : {}),
+        ...(meta.simulated ? { simulated: true } : {}),
+      }));
+      return { route: 'agent' };
+    }
     const m = matchCommand(text, library.commands);
     if (m) {
       const def = m.command.def;
@@ -364,6 +377,7 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
     await route(text, u.context as Record<string, unknown>, {
       clientId: u.clientId,
       utteranceId: u.id,
+      oneshot: u.oneshot,
       extra: { durationMs: Math.round(durationMs), sttMs, ...(r.model ? { model: r.model } : {}), ...(u.truncated ? { truncated: true } : {}) },
     });
   }
@@ -386,6 +400,7 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
       const u: Utterance = {
         id, clientId, sampleRate: rate,
         context: msg.context && typeof msg.context === 'object' ? msg.context : {},
+        oneshot: msg.agent === 'oneshot',
         chunks: [], samples: 0, maxSamples: Math.round((rate * maxMs) / 1000), truncated: false,
         startedAt: now(), stale: null,
       };
@@ -448,11 +463,11 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
       }
     },
 
-    async simulate(text: string, context?: Record<string, unknown>) {
+    async simulate(text: string, context?: Record<string, unknown>, opts?: { agent?: 'oneshot' }) {
       const id = `sim-${now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const t = text.replace(/\s+/g, ' ').trim();
       if (!t) return { route: 'none' as const };
-      return route(t, context ?? {}, { utteranceId: id, simulated: true });
+      return route(t, context ?? {}, { utteranceId: id, simulated: true, oneshot: opts?.agent === 'oneshot' });
     },
 
     commands(): VoiceCommand[] {
