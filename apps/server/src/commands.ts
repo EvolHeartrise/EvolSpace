@@ -4,8 +4,9 @@
 //
 // Other server modules add commands with `registry.register(...)`, or at import
 // time with the global `registerCommand(...)` (picked up by every registry).
-import type { SceneOp } from '@evolspace/protocol';
+import type { Entity, Quat, SceneOp, Vec3, WidgetManifest } from '@evolspace/protocol';
 import type { SceneStore } from './scene/store.ts';
+import { rotateVec } from './scene/math.ts';
 
 export interface CommandContext {
   /** WS client that issued the command, if any. */
@@ -23,6 +24,15 @@ export interface CommandDef {
 
 export class CommandError extends Error {
   constructor(message: string, public status = 400) { super(message); this.name = 'CommandError'; }
+}
+
+/**
+ * The command does not apply to these args (e.g. `spawn` of a name that is no widget). Over HTTP/WS it is
+ * a 404 like any error; the voice fast path hands the utterance to Claude instead of reporting a failure.
+ */
+export class CommandDeclined extends CommandError {
+  readonly passToAgent = true;
+  constructor(message: string) { super(message, 404); this.name = 'CommandDeclined'; }
 }
 
 const globalCommands = new Map<string, CommandDef>();
@@ -79,6 +89,10 @@ export interface BuiltinDeps {
   rebuildWidget(id: string): Promise<unknown>;
   /** Publish a value on the data bus; returns the new seq. Throws (status 400) on a bad name/value. */
   publish(channel: string, value: unknown, opts: { producer: string; origin?: string }): { seq: number };
+  /** The widget catalog. */
+  widgets(): WidgetManifest[];
+  /** The user's head pose from the primary xr client, if one is connected. */
+  head(): { position: Vec3; rotation: Quat } | null;
 }
 
 function entityArg(args: Record<string, unknown>, store: SceneStore): string {
@@ -139,6 +153,58 @@ export function planDuplicate(store: SceneStore, rootId: string, offset: [number
   return { ops, rootId: map.get(rootId)! };
 }
 
+const compact = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/** Levenshtein distance, early-out above `max`. */
+function within(a: string, b: string, max: number): boolean {
+  if (Math.abs(a.length - b.length) > max) return false;
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j]! + 1, next[j - 1]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    if (Math.min(...next) > max) return false;
+    row = next;
+  }
+  return row[b.length]! <= max;
+}
+
+/**
+ * A spoken widget name → widget id: "line plot" / "Line-Plot" / "a line plot widget" → `line-plot`.
+ * Exact after dropping articles, a trailing "widget/panel" and all non-alphanumerics; otherwise a
+ * unique near miss (one edit, names of 5+ chars) for STT slips. undefined = no (unique) widget.
+ */
+export function resolveWidgetName(spoken: string, ids: readonly string[]): string | undefined {
+  const words = spoken.toLowerCase().trim().split(/[\s_-]+/).filter(Boolean);
+  while (words.length > 1 && /^(a|an|the|another|new|one)$/.test(words[0]!)) words.shift();
+  while (words.length > 1 && /^(widget|widgets|panel|one|please|here)$/.test(words[words.length - 1]!)) words.pop();
+  const key = compact(words.join(''));
+  if (!key) return undefined;
+  const exact = ids.find((id) => compact(id) === key);
+  if (exact) return exact;
+  if (key.length < 5) return undefined;
+  const near = ids.filter((id) => within(compact(id), key, 1) || (key.endsWith('s') && compact(id) === key.slice(0, -1)));
+  return near.length === 1 ? near[0] : undefined;
+}
+
+/** "line-plot" → "Line Plot". */
+const titleCase = (id: string) => id.split(/[-_]+/).filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(' ');
+
+/**
+ * Root transform for new content in front of the user (same rule as the MCP spawn tool): further away
+ * for bigger widgets, a little below eye height, turned to face them. No headset: in front of the origin.
+ */
+export function placeInFront(head: { position: Vec3; rotation: Quat } | null, size?: Vec3): { position: Vec3; rotation: Quat } {
+  const dist = Math.min(3, Math.max(0.8, 0.5 + (size ? Math.max(...size) : 0.3)));
+  if (!head) return { position: [0, 1.3, -dist], rotation: [0, 0, 0, 1] };
+  const f = rotateVec(head.rotation, [0, 0, -1]);
+  let fx = f[0], fz = f[2];
+  const len = Math.hypot(fx, fz);
+  if (len < 1e-3) { fx = 0; fz = -1; } else { fx /= len; fz /= len; }
+  const [hx, hy, hz] = head.position;
+  const yaw = Math.atan2(-fx, -fz); // widgets face +Z: point it back at the user
+  return { position: [hx + fx * dist, Math.max(0.3, hy - 0.15), hz + fz * dist], rotation: [0, Math.sin(yaw / 2), 0, Math.cos(yaw / 2)] };
+}
+
 export function registerBuiltinCommands(reg: CommandRegistry, d: BuiltinDeps): void {
   reg.register('undo', { description: 'Undo the last scene change (or gesture).', run: () => d.undo() });
   reg.register('redo', { description: 'Redo the last undone scene change.', run: () => d.redo() });
@@ -155,6 +221,25 @@ export function registerBuiltinCommands(reg: CommandRegistry, d: BuiltinDeps): v
       const plan = planDuplicate(d.store, id);
       d.applyOps(plan.ops, opSourceFor(ctx.origin));
       return { entity: plan.rootId };
+    },
+  });
+  reg.register('spawn', {
+    description: 'Add a widget in front of the user. `widget` may be a spoken name ("line plot" → line-plot); declines (voice: goes to Claude) when it names no widget.',
+    args: '{widget: string, name?: string, props?: object}',
+    run: (args, ctx) => {
+      const spoken = stringArg(args, 'widget');
+      const catalog = d.widgets();
+      const id = resolveWidgetName(spoken, catalog.map((m) => m.id));
+      if (!id) throw new CommandDeclined(`no widget named '${spoken}'`);
+      const w = catalog.find((m) => m.id === id);
+      const entity: Partial<Entity> & { widget: string } = {
+        widget: id,
+        name: typeof args.name === 'string' && args.name ? args.name : titleCase(id),
+        props: args.props && typeof args.props === 'object' ? (args.props as Record<string, unknown>) : {},
+        transform: { ...placeInFront(d.head(), w?.size), scale: [1, 1, 1] },
+      };
+      const { ids } = d.applyOps([{ op: 'add', entity: entity as Entity }], opSourceFor(ctx.origin));
+      return { entity: ids[0], widget: id };
     },
   });
   reg.register('workspace.save', {

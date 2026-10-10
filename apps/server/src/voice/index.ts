@@ -247,16 +247,23 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
         deps.event('voice.utterance', { ...base, route: 'none', command: label, error: e.message });
         return { route: 'none', command: label };
       }
+      let declined = false;
       try {
         await deps.runCommand(def.command, args, { clientId: meta.clientId });
         deps.event('voice.utterance', { ...base, route: 'fastpath', command: label, run: def.command, ...(args ? { args } : {}) });
       } catch (e) {
-        const msg = (e as Error).message;
-        deps.say(`Voice command "${label}" failed: ${msg}`, 'error');
-        deps.event('voice.utterance', { ...base, route: 'fastpath', command: label, run: def.command, ...(args ? { args } : {}), error: msg });
+        // A command that declines (e.g. "spawn <not a widget>") was the wrong match: Claude takes it.
+        declined = (e as { passToAgent?: unknown }).passToAgent === true;
+        if (!declined) {
+          const msg = (e as Error).message;
+          deps.say(`Voice command "${label}" failed: ${msg}`, 'error');
+          deps.event('voice.utterance', { ...base, route: 'fastpath', command: label, run: def.command, ...(args ? { args } : {}), error: msg });
+        }
       }
-      sendResult(meta.clientId, { type: 'voice.result', utteranceId: meta.utteranceId, text, route: 'fastpath', command: label });
-      return { route: 'fastpath', command: label };
+      if (!declined) {
+        sendResult(meta.clientId, { type: 'voice.result', utteranceId: meta.utteranceId, text, route: 'fastpath', command: label });
+        return { route: 'fastpath', command: label };
+      }
     }
     // Not a fast-path command → Claude. The voice status returns to idle when
     // finish() completes (synchronously after this, before any HTTP request can be

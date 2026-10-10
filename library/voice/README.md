@@ -46,7 +46,7 @@ or adds detail ("delete all the spheres", "make this red"), leave it to Claude.
   - Named groups become variables: `"set layer (?<n>[a-z0-9 ]+)"`.
 - **command**: a name in the **server command registry**. See
   `POST /api/command {name:'commands.list'}` for the list: `undo`, `redo`,
-  `delete`, `duplicate`, `workspace.save`, `screenshot`, `broadcast`,
+  `delete`, `duplicate`, `spawn`, `workspace.save`, `screenshot`, `broadcast`,
   `agent.ask`, `say`, `source.restart`, … Two special cases:
   - `"none"` is a no-op. The utterance is consumed and nothing happens; used
     for "cancel" and "never mind".
