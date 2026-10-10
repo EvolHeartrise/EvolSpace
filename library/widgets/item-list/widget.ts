@@ -1,7 +1,8 @@
 // item-list — a scrollable list card of status-tagged items (GitHub issues/PRs, tasks, runs, …).
 // Each row: a status color stripe, "id  title" and a dim meta line that starts with the status
 // word in its color. Filter tabs (All + one per status, with counts) sit under the title; pinch-drag
-// the rows to scroll, pinch/poke a row to select it (output `select`).
+// the rows to scroll (smooth: follows the hand, glides after a flick, partial rows clipped at the
+// edges — shared/scroll.ts), pinch/poke a row to select it (output `select`).
 //
 // Data (input `items` or the `channel` prop): Item[] or {title?, updatedAt?, items: Item[]} with
 // Item = {id?, title, status?, color?, meta?, url?, labels?: [{name}]}.
@@ -15,6 +16,7 @@ import { truncate, formatAge } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { ChannelProp } from '../../shared/binding.ts';
 import { STYLE } from '../../shared/style.ts';
+import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   title: string;
@@ -93,7 +95,8 @@ const definition: WidgetDefinition<Props> = {
     let group: THREE.Group | null = null;
     let data: { title: string; updatedAt: number; items: Item[] } = { title: '', updatedAt: NaN, items: [] };
     let shown: Item[] = [];
-    let scroll = 0;
+    const scroll = new SmoothScroll();
+    let view: ScrollViewport | null = null;
     let selected: Item | null = null;
     let hovered = -1;
     let dirty = true;
@@ -116,7 +119,8 @@ const definition: WidgetDefinition<Props> = {
       const rowH = s * 2.9, titleH = s * 2.4, tabsH = s * 2.1;
       const h = PAD + titleH + tabsH + s * 0.8 + n * rowH + PAD * 0.7;
       const top = h / 2 - PAD;
-      return { s, w, n, rowH, titleH, tabsH, h, top, rowsTop: top - titleH - tabsH - s * 0.8, x0: -w / 2 + PAD, x1: w / 2 - PAD };
+      const rowsTop = top - titleH - tabsH - s * 0.8;
+      return { s, w, n, rowH, titleH, tabsH, h, top, rowsTop, rowsBottom: rowsTop - n * rowH, x0: -w / 2 + PAD, x1: w / 2 - PAD };
     }
 
     const colorOf = (it: Item) => {
@@ -143,8 +147,12 @@ const definition: WidgetDefinition<Props> = {
       selPlate.visible = false;
       selPlate.raycast = () => {};
       g.add(hoverPlate, selPlate);
+      view = new ScrollViewport(T, g, L.rowsBottom, L.rowsTop);
+      view.add(hoverPlate);
+      view.add(selPlate);
 
-      for (let r = 0; r < L.n; r++) {
+      // One row more than fits: while scrolling, the top and bottom rows are both partly visible.
+      for (let r = 0; r <= L.n; r++) {
         const rg = new T.Group();
         rg.position.set(0, L.rowsTop - (r + 0.5) * L.rowH, 0);
         const mat = ownMaterial(T, theme.textDim);
@@ -163,6 +171,7 @@ const definition: WidgetDefinition<Props> = {
         ctx.interactive(hit);
         rg.add(stripe, line1, line2, hit);
         g.add(rg);
+        view.add(rg);
         rowParts.push({ g: rg, stripe, mat, line1, line2 });
       }
 
@@ -222,7 +231,7 @@ const definition: WidgetDefinition<Props> = {
     function applyFilter(): void {
       const f = ctx.props.filter || '';
       shown = f ? data.items.filter((it) => it.status === f) : data.items;
-      scroll = Math.min(scroll, Math.max(0, shown.length - L.n));
+      scroll.setMax(Math.max(0, shown.length - L.n));
     }
 
     function render(): void {
@@ -230,15 +239,18 @@ const definition: WidgetDefinition<Props> = {
       const name = ctx.props.title || data.title || 'Items';
       titleText!.set(name);
       renderAge();
-      const first = Math.round(scroll);
+      const first = Math.floor(scroll.pos);
+      const frac = scroll.pos - first;
       const avail = L.x1 - (L.x0 + L.s * 0.9) - L.s * 0.6;
       const chars1 = Math.max(8, Math.floor(avail / (L.s * 0.5)));
       const chars2 = Math.max(8, Math.floor(avail / (L.s * 0.78 * 0.5)));
       const textInt = hexToInt(resolveColor(theme, 'text')), dimInt = hexToInt(resolveColor(theme, 'textDim'));
       let selRow = -1;
-      for (let r = 0; r < L.n; r++) {
+      for (let r = 0; r <= L.n; r++) {
         const p = rowParts[r], it = shown[first + r];
-        p.g.visible = !!it || (r === 0 && !shown.length);
+        p.g.position.y = L.rowsTop - (r + 0.5 - frac) * L.rowH;
+        const inView = r < L.n || frac > 1e-4; // the spare row only shows while scrolled between rows
+        p.g.visible = inView && (!!it || (r === 0 && !shown.length));
         if (!it) {
           if (r === 0) {
             p.line1.set(data.items.length ? 'Nothing with this status' : 'Waiting for data…');
@@ -262,16 +274,17 @@ const definition: WidgetDefinition<Props> = {
       }
       selPlate!.visible = selRow >= 0;
       if (selRow >= 0) selPlate!.position.set(0, rowParts[selRow].g.position.y, STYLE.zContent);
-      hoverPlate!.visible = hovered >= 0 && hovered < L.n && !!shown[first + hovered] && hovered !== selRow;
+      hoverPlate!.visible = hovered >= 0 && hovered <= L.n && !!shown[first + hovered] && hovered !== selRow;
       if (hoverPlate!.visible) hoverPlate!.position.set(0, rowParts[hovered].g.position.y, STYLE.zContent);
       const over = shown.length > L.n;
       track!.visible = thumb!.visible = over;
       if (over) {
         const rowsH = L.n * L.rowH, th = Math.max(L.s * 1.5, (rowsH * L.n) / shown.length);
-        const u = first / (shown.length - L.n);
+        const u = scroll.pos / (shown.length - L.n);
         thumb!.scale.set(L.s * 0.18, th, 1);
         thumb!.position.y = L.rowsTop - th / 2 - u * (rowsH - th);
       }
+      view!.update();
     }
 
     function renderAge(): void {
@@ -294,7 +307,7 @@ const definition: WidgetDefinition<Props> = {
 
     // ---- interaction --------------------------------------------------------------------------
     let dragHand: string | null = null;
-    let dragY0 = 0, scroll0 = 0, dragMoved = false, dragPart = '';
+    let dragY0 = 0, dragMoved = false, dragPart = '', wasGliding = false;
 
     function rowAt(part: string): number {
       return part.startsWith('row:') ? Number(part.slice(4)) : -1;
@@ -328,37 +341,39 @@ const definition: WidgetDefinition<Props> = {
           dragHand = e.hand;
           dragPart = part;
           dragY0 = e.localPoint[1];
-          scroll0 = scroll;
           dragMoved = false;
+          wasGliding = scroll.active;
+          scroll.stop(); // a pinch on a gliding list catches it
           return;
         }
         if (e.hand !== dragHand) return;
         if (e.phase === 'move') {
           const dy = e.localPoint[1] - dragY0;
-          if (!dragMoved && Math.abs(dy) > L.rowH * 0.45 && dragPart.startsWith('row:')) dragMoved = true;
-          if (dragMoved) {
-            const max = Math.max(0, shown.length - L.n);
-            const s = Math.min(max, Math.max(0, scroll0 + dy / L.rowH));
-            if (Math.round(s) !== Math.round(scroll)) dirty = true;
-            scroll = s;
+          if (!dragMoved && Math.abs(dy) > L.rowH * 0.45 && dragPart.startsWith('row:')) {
+            dragMoved = true;
+            dragY0 = e.localPoint[1]; // follow the hand from here on, without a jump
+            scroll.dragStart();
+          } else if (dragMoved) {
+            scroll.dragMove(dy / L.rowH); // content follows the hand
           }
           return;
         }
         // end / cancel
         dragHand = null;
-        if (e.phase !== 'end' || dragMoved) return;
+        if (dragMoved) { scroll.dragEnd(e.phase === 'end'); return; }
+        if (e.phase !== 'end' || wasGliding) return;
         if (dragPart.startsWith('tab:')) {
           const chip = tabsGroup?.getObjectByName(dragPart);
           const k = (chip?.userData.filterKey as string | undefined) ?? '';
           if (k !== (ctx.props.filter || '')) {
             ctx.setProps({ filter: k });
-            scroll = 0;
+            scroll.scrollTo(0, false);
             buildTabs();
             applyFilter();
             dirty = true;
           }
         } else {
-          const r = rowAt(dragPart), it = r >= 0 ? shown[Math.round(scroll) + r] : undefined;
+          const r = rowAt(dragPart), it = r >= 0 ? shown[Math.floor(scroll.pos) + r] : undefined;
           if (it) {
             selected = selected === it ? null : it;
             if (selected) ctx.emit('select', { ...selected });
@@ -369,7 +384,8 @@ const definition: WidgetDefinition<Props> = {
       update(dt) {
         ageTimer += dt;
         if (ageTimer > 5) { ageTimer = 0; if (group) renderAge(); }
-        if (!dirty) return;
+        if (scroll.step(dt)) dirty = true;
+        if (!dirty) { view?.update(); return; } // keeps the clip planes on the card while it is moved
         dirty = false;
         render();
       },

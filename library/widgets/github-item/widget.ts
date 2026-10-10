@@ -17,6 +17,7 @@ import { truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { ChannelProp } from '../../shared/binding.ts';
 import { STYLE } from '../../shared/style.ts';
+import { SmoothScroll } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   channel: string;
@@ -119,12 +120,17 @@ const definition: WidgetDefinition<Props> = {
     let heights = new Float64Array(0);
     let offsets = new Float64Array(1); // offsets[i] = top of block i below the content top; offsets[n] = total
     const live = new Map<number, Live>();
-    let scroll = 0;
+    /**
+     * Scroll position (content top above the view top) in centimeters — SmoothScroll's fling thresholds
+     * are tuned for row-sized units: follows the hand, glides after a flick.
+     */
+    const sc = new SmoothScroll();
+    const CM = 100;
     let bodyTop = 0, bodyBottom = 0;
     let track: THREE.Mesh | null = null;
     let thumb: THREE.Mesh | null = null;
     let dirty = false;
-    let drag: { hand: string; part: string; y0: number; scroll0: number } | null = null;
+    let drag: { hand: string; part: string; y0: number } | null = null;
 
     const W = () => ctx.props.width, H = () => ctx.props.height, S = () => ctx.props.textSize;
     const colW = () => W() - 2 * PAD;
@@ -233,7 +239,8 @@ const definition: WidgetDefinition<Props> = {
       for (let i = 0; i < blocks.length; i++) heights[i] = blockHeight(blocks[i], null);
       offsets = new Float64Array(blocks.length + 1);
       recomputeOffsets();
-      scroll = 0;
+      sc.stop();
+      sc.setMax(0); // back to the top for a new item
       render();
     }
 
@@ -292,7 +299,8 @@ const definition: WidgetDefinition<Props> = {
     function render(): void {
       if (!view || !blocks.length) return;
       const s = S(), x0 = -W() / 2 + PAD, vh = viewH();
-      scroll = Math.min(Math.max(0, scroll), maxScroll());
+      sc.setMax(maxScroll() * CM);
+      const scroll = sc.pos / CM;
       const lo = scroll - vh * 0.5, hi = scroll + vh * 1.5;
       for (const [i, l] of live) {
         if (offsets[i + 1] < lo - vh || offsets[i] > hi + vh) { freeLive(l); live.delete(i); }
@@ -408,19 +416,26 @@ const definition: WidgetDefinition<Props> = {
         const y = e.localPoint[1];
         if (e.phase === 'start') {
           if (drag || (part !== 'body' && part !== 'scrollbar')) return;
-          drag = { hand: e.hand, part, y0: y, scroll0: scroll };
+          drag = { hand: e.hand, part, y0: y };
+          if (part === 'body') sc.dragStart(); else sc.stop();
         } else if (!drag || e.hand !== drag.hand) return;
-        else if (e.phase === 'end' || e.phase === 'cancel') { drag = null; return; }
-        if (drag.part === 'body') scroll = drag.scroll0 + (y - drag.y0); // content follows the hand
+        else if (e.phase === 'end' || e.phase === 'cancel') {
+          if (drag.part === 'body') sc.dragEnd(e.phase === 'end'); // keeps gliding after a flick
+          drag = null;
+          dirty = true;
+          return;
+        }
+        if (drag.part === 'body') sc.dragMove((y - drag.y0) * CM); // content follows the hand
         else {
-          // the thumb jumps to the hand: map the bar position to the scroll range
+          // the thumb jumps to the hand: map the bar position to the scroll range (no glide)
           const vh = viewH(), th = Math.max(S() * 2, (vh * vh) / Math.max(total(), 1e-6));
           const u = (bodyTop - th / 2 - y) / Math.max(1e-6, vh - th);
-          scroll = Math.min(1, Math.max(0, u)) * maxScroll();
+          sc.scrollTo(Math.min(1, Math.max(0, u)) * maxScroll() * CM, false);
         }
         dirty = true;
       },
-      update() {
+      update(dt) {
+        if (sc.active && sc.step(dt)) dirty = true;
         if (remeasure()) dirty = true;
         if (!dirty) return;
         dirty = false;

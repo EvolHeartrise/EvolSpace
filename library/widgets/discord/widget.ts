@@ -1,5 +1,6 @@
 // discord — a Discord chat card: one DM, group DM or server channel, live, newest message at the
-// bottom (pinch-drag the messages to scroll back). Without a channel (or after the back button) the
+// bottom (pinch-drag the messages to scroll back: smooth, follows the hand, glides after a flick —
+// shared/scroll.ts). Without a channel (or after the back button) the
 // card is a picker: Direct messages / servers → channels; pinch a row to open it.
 //
 // Data comes from the `discord` source (library/sources/discord, signed in with the user's account):
@@ -18,6 +19,8 @@ import { disposeTree, hitMaterial, ownMaterial, sharedGeometry } from '../../sha
 import { makeText, MeasureWatch, setColorRanges, textSize, type Text } from '../../shared/text.ts';
 import { hexToInt, resolveColor } from '../../shared/color.ts';
 import { truncate } from '../../shared/format.ts';
+import { estimateTextBlock } from '../../shared/layout.ts';
+import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { makeIcon, setIcon } from '../../shared/icons.ts';
 import { STYLE } from '../../shared/style.ts';
@@ -47,6 +50,8 @@ interface Msg {
 }
 interface ChannelData { id: string; name: string; kind: string; guild?: string; messages: Msg[]; loading?: boolean; error?: string }
 interface PickRow { key: string; label: string; meta: string; icon: string }
+/** A message laid out for the chat view: its text, whether it starts an author group, its height (m). */
+interface Laid { id: string; body: string; head: boolean; h: number; measured: boolean }
 
 const PAD = 0.016;
 /** Message slots (a message = author line + wrapped body); more than ever fit the body. */
@@ -132,8 +137,14 @@ const definition: WidgetDefinition<Props> = {
     let guilds: Guild[] = [];
     let chat: ChannelData | null = null;
     let pickView = ''; // '' = home, 'dms', or a guild id
-    let pickScroll = 0;
-    let scroll = 0; // chat: newest messages skipped
+    let pickStale = true;
+    const pickScroll = new SmoothScroll(); // rows
+    // meters above the newest message (0 = at the bottom); a "row" ≈ two text lines for the fling thresholds
+    const chatScroll = new SmoothScroll({ unit: ctx.props.textSize * 2.5 });
+    let laid: Laid[] = []; // chat messages, oldest → newest
+    let offsets: number[] = []; // bottom of each message above the newest's bottom (m)
+    let total = 0;
+    const slotMsg: number[] = []; // message index each slot showed in the last render (-1 = none)
     let dirty = true;
     let lease = 0;
     let offChat: (() => void) | null = null;
@@ -153,6 +164,8 @@ const definition: WidgetDefinition<Props> = {
     let pickItems: PickRow[] = [];
     let thumb: THREE.Mesh | null = null;
     let track: THREE.Mesh | null = null;
+    let chatView: ScrollViewport | null = null;
+    let pickViewport: ScrollViewport | null = null;
     const watch = new MeasureWatch();
     let L = layout();
 
@@ -188,7 +201,7 @@ const definition: WidgetDefinition<Props> = {
 
       const hy = L.top - L.headerH / 2 + L.s * 0.2;
       backBtn = ctx.ui.panel(L.s * 2.2, L.s * 2.2, { color: theme.surface });
-      backBtn.position.set(L.x0 + L.s * 1.1, hy, STYLE.zContent);
+      backBtn.position.set(L.x0 + L.s * 1.1, hy, STYLE.zContent + 0.006); // in front of the row hit boxes
       backBtn.name = 'back';
       ctx.interactive(backBtn);
       const chev = makeIcon(ctx, 'chevron-left', { size: L.s * 1.4, color: resolveColor(theme, 'text') });
@@ -225,7 +238,10 @@ const definition: WidgetDefinition<Props> = {
       emptyText.position.set(0, (L.bodyTop + L.bodyBottom) / 2, STYLE.zText);
       g.add(emptyText);
 
+      chatView = new ScrollViewport(T, g, L.bodyBottom, L.bodyTop);
+      pickViewport = new ScrollViewport(T, g, L.bodyBottom, L.bodyTop);
       const watched: THREE.Object3D[] = [];
+      slotMsg.length = 0;
       for (let i = 0; i < SLOTS; i++) {
         const sg = new T.Group();
         const head = makeText(ctx, '', { size: L.s * 0.9, anchorX: 'left', anchorY: 'top', color: theme.textDim, whiteSpace: 'nowrap', weight: 'semibold' });
@@ -236,11 +252,14 @@ const definition: WidgetDefinition<Props> = {
         sg.visible = false;
         g.add(sg);
         slots.push({ g: sg, head, body });
+        slotMsg.push(-1);
+        chatView.add(sg);
         watched.push(body);
       }
       watch.reset(watched);
 
-      for (let r = 0; r < L.pickN; r++) {
+      // One row more than fits: while scrolling, the top and bottom rows are both partly visible.
+      for (let r = 0; r <= L.pickN; r++) {
         const rg = new T.Group();
         rg.position.set(0, L.bodyTop - (r + 0.5) * L.rowH, 0);
         const icon = makeIcon(ctx, 'hash', { size: L.s * 1.2, color: resolveColor(theme, 'textDim') });
@@ -252,11 +271,15 @@ const definition: WidgetDefinition<Props> = {
         meta.position.set(L.x1, L.s * 0.1, STYLE.zText);
         const plate = ctx.ui.panel(L.w - 2 * PAD, L.rowH - L.s * 0.35, { color: theme.surface, opacity: 0.55 });
         plate.position.z = STYLE.zContent;
-        plate.name = `pick:${r}`;
-        ctx.interactive(plate);
-        rg.add(plate, icon, label, meta);
+        plate.raycast = () => {};
+        const hit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
+        hit.scale.set(L.w - 2 * PAD, L.rowH, 0.01);
+        hit.name = `pick:${r}`;
+        ctx.interactive(hit);
+        rg.add(plate, icon, label, meta, hit);
         rg.visible = false;
         g.add(rg);
+        pickViewport.add(rg);
         pickRows.push({ g: rg, icon, label, meta });
       }
 
@@ -268,7 +291,41 @@ const definition: WidgetDefinition<Props> = {
       for (const m of [track, thumb]) { m.raycast = () => {}; g.add(m); }
 
       ctx.root.add(g);
+      relayout();
       dirty = true;
+    }
+
+    // ---- chat layout (heights estimated, then replaced by troika's measurements)
+    function chars(): number {
+      return Math.max(10, Math.floor(L.textW / (L.s * 0.5))) * Math.max(2, ctx.props.lines - 2);
+    }
+
+    /** (Re)build `laid` from the chat data, keeping measured heights of unchanged messages. */
+    function relayout(): void {
+      const msgs = chat?.messages ?? [];
+      const known = new Map(laid.map((x) => [x.id, x]));
+      const max = chars();
+      laid = msgs.map((m, i) => {
+        const prev = msgs[i - 1];
+        const head = !prev || prev.author.id !== m.author.id || m.ts - prev.ts > GROUP_MS;
+        const body = messageBody(m, max);
+        const old = known.get(m.id);
+        if (old && old.body === body && old.head === head) return old;
+        const bh = estimateTextBlock(body, L.s, L.textW, 'sans', 1.25).height;
+        return { id: m.id, body, head, h: blockH(head, bh), measured: false };
+      });
+      sumOffsets();
+    }
+
+    function blockH(head: boolean, bodyH: number): number {
+      return (head ? L.s * 1.35 : 0) + bodyH + (head ? L.s * 0.55 : L.s * 0.2);
+    }
+
+    function sumOffsets(): void {
+      offsets.length = laid.length;
+      let off = 0;
+      for (let i = laid.length - 1; i >= 0; i--) { offsets[i] = off; off += laid[i].h; }
+      total = off;
     }
 
     // ---- data
@@ -280,7 +337,9 @@ const definition: WidgetDefinition<Props> = {
       offChat = null;
       chatSub = name;
       chat = null;
-      scroll = 0;
+      laid = [];
+      sumOffsets();
+      chatScroll.scrollTo(0, false);
       dirty = true;
       if (!name) return;
       requestOpen();
@@ -288,13 +347,12 @@ const definition: WidgetDefinition<Props> = {
         if (chatSub !== name) return;
         const d = parseChannelData(v);
         if (!d) { ctx.error('discord: unexpected channel data'); return; }
-        // Keep the view anchored while scrolled back and new messages arrive.
-        if (chat && scroll > 0 && d.messages.length > chat.messages.length) {
-          const lastId = chat.messages.at(-1)?.id;
-          const idx = d.messages.findIndex((m) => m.id === lastId);
-          if (idx >= 0) scroll += d.messages.length - 1 - idx;
-        }
+        // Scrolled back: keep what the user reads still while new messages arrive below it.
+        const lastId = chat?.messages.at(-1)?.id;
+        const before = total;
         chat = d;
+        relayout();
+        if (chatScroll.pos > 0 && lastId && laid.some((x) => x.id === lastId)) chatScroll.shift(total - before);
         dirty = true;
       });
     }
@@ -316,6 +374,7 @@ const definition: WidgetDefinition<Props> = {
         const o = (v && typeof v === 'object' ? v : {}) as { dms?: unknown; guilds?: unknown };
         dms = Array.isArray(o.dms) ? (o.dms as Entry[]).filter((e) => e && str(e.id)) : [];
         guilds = Array.isArray(o.guilds) ? (o.guilds as Guild[]).filter((x) => x && str(x.id) && Array.isArray(x.channels)) : [];
+        pickStale = true;
         dirty = true;
       }));
     }
@@ -343,6 +402,8 @@ const definition: WidgetDefinition<Props> = {
       bodyHit!.visible = !!id;
       if (id) renderChat();
       else renderPicker();
+      chatView!.update();
+      pickViewport!.update();
     }
 
     function renderChat(): void {
@@ -353,51 +414,55 @@ const definition: WidgetDefinition<Props> = {
       setIcon(T, kindIconMesh!, kindIcon(kind));
       titleText!.set(truncate(ctx.props.title || c?.name || entry?.name || channelId(), 40));
       const sub = c?.guild ?? guilds.find((x) => x.channels.some((e) => e.id === channelId()))?.name ?? (kind === 'dm' ? 'Direct message' : kind === 'group' ? 'Group DM' : '');
-      subText!.set(truncate([sub, scroll > 0 ? `${Math.round(scroll)} newer below` : ''].filter(Boolean).join(' · '), 60));
 
       const msgs = c?.messages ?? [];
       const note = statusLine() || c?.error || (c?.loading && !msgs.length ? 'Loading messages…' : !c ? 'Loading messages…' : !msgs.length ? 'No messages yet' : '');
       emptyText!.set(msgs.length ? '' : note);
       emptyText!.visible = !msgs.length;
 
-      scroll = Math.max(0, Math.min(scroll, Math.max(0, msgs.length - 1)));
-      const charsPerLine = Math.max(10, Math.floor(L.textW / (L.s * 0.5)));
-      const maxChars = charsPerLine * Math.max(2, ctx.props.lines - 2);
-      let y = L.bodyBottom + L.s * 0.2;
-      let used = 0;
-      let i = msgs.length - 1 - Math.round(scroll);
-      for (; used < SLOTS && i >= 0; i--) {
-        const m = msgs[i], prev = msgs[i - 1];
-        const showHead = !prev || prev.author.id !== m.author.id || m.ts - prev.ts > GROUP_MS;
-        const slot = slots[used];
-        const bodyStr = messageBody(m, maxChars);
-        slot.body.set(bodyStr);
+      // Content bottom (newest message) sits just above the card's bottom padding when pos = 0.
+      const base = L.bodyBottom + L.s * 0.2;
+      const viewH = L.bodyTop - base;
+      chatScroll.setMax(total - viewH);
+      const pos = chatScroll.pos;
+      let used = 0, below = 0, remeasured = false;
+      for (let i = laid.length - 1; i >= 0 && used < SLOTS; i--) {
+        const x = laid[i], off = offsets[i] - pos;
+        if (off > viewH) break; // this one and older are above the view
+        if (off + x.h < 0) { below++; continue; } // newer messages scrolled out at the bottom
+        const m = msgs[i], slot = slots[used];
+        const sameAsBefore = slotMsg[used] === i;
+        slot.body.set(x.body);
         (slot.body as unknown as { fillOpacity?: number }).fillOpacity = m.pending ? 0.55 : 1;
-        const bh = textSize(slot.body, { text: bodyStr, size: L.s, maxWidth: L.textW, lineHeight: 1.25 }).height;
-        const hh = showHead ? L.s * 1.35 : 0;
-        const gap = showHead ? L.s * 0.55 : L.s * 0.2;
-        const h = hh + bh + gap;
-        if (used > 0 && y + h > L.bodyTop) break; // the newest one always shows (clipped content)
+        // Troika's real height replaces the estimate once this slot has been showing this message.
+        if (sameAsBefore) {
+          const sz = textSize(slot.body, { text: x.body, size: L.s, maxWidth: L.textW, lineHeight: 1.25 });
+          const h = blockH(x.head, sz.height);
+          if (sz.measured && Math.abs(h - x.h) > 1e-4) { x.h = h; x.measured = true; remeasured = true; }
+        }
+        slotMsg[used] = i;
         slot.g.visible = true;
-        slot.head.visible = showHead;
-        if (showHead) {
+        slot.head.visible = x.head;
+        const hh = x.head ? L.s * 1.35 : 0;
+        if (x.head) {
           const name = m.author.name;
           slot.head.set(`${name}  ${clock(m.ts)}${m.pending ? '  sending…' : ''}`);
           setColorRanges(slot.head, { 0: hexToInt(authorColor(m)), [name.length]: dimInt });
         }
-        const top = y + h - gap * 0.5;
+        const gap = x.head ? L.s * 0.55 : L.s * 0.2;
+        const top = base + off + x.h - gap * 0.5;
         slot.head.position.y = top;
         slot.body.position.y = top - hh;
-        y += h;
         used++;
       }
-      for (let k = used; k < SLOTS; k++) slots[k].g.visible = false;
-      const over = msgs.length > used;
+      for (let k = used; k < SLOTS; k++) { slots[k].g.visible = false; slotMsg[k] = -1; }
+      if (remeasured) { sumOffsets(); dirty = true; } // lay out again with the real heights next frame
+      subText!.set(truncate([sub, below > 0 ? `${below} newer below` : ''].filter(Boolean).join(' · '), 60));
+      const over = total > viewH;
       track!.visible = thumb!.visible = over;
       if (over) {
-        const frac = used / msgs.length;
-        const th = Math.max(L.s * 1.5, L.bodyH * frac);
-        const u = msgs.length - used > 0 ? Math.min(1, scroll / Math.max(1, msgs.length - used)) : 0;
+        const th = Math.max(L.s * 1.5, L.bodyH * (viewH / total));
+        const u = chatScroll.max > 0 ? pos / chatScroll.max : 0;
         thumb!.scale.set(L.s * 0.16, th, 1);
         thumb!.position.y = L.bodyBottom + th / 2 + u * (L.bodyH - th);
       }
@@ -421,16 +486,18 @@ const definition: WidgetDefinition<Props> = {
       const gd = pickView && pickView !== 'dms' ? guilds.find((x) => x.id === pickView) : undefined;
       titleText!.set(ctx.props.title || (pickView === 'dms' ? 'Direct messages' : gd ? truncate(gd.name, 40) : 'Discord'));
       subText!.set(status?.state === 'ready' && status.user?.name ? `Signed in as ${status.user.name}` : '');
-      pickItems = pickList();
+      if (pickStale) { pickItems = pickList(); pickStale = false; }
       const note = statusLine() || (pickItems.length ? '' : 'Nothing here');
       emptyText!.set(pickItems.length ? '' : note);
       emptyText!.visible = !pickItems.length;
-      pickScroll = Math.max(0, Math.min(pickScroll, Math.max(0, pickItems.length - L.pickN)));
-      const first = Math.round(pickScroll);
+      pickScroll.setMax(pickItems.length - L.pickN);
+      const first = Math.floor(pickScroll.pos);
+      const frac = pickScroll.pos - first;
       const chars = Math.max(8, Math.floor((L.textW - L.s * 7) / (L.s * 1.05 * 0.52)));
-      for (let r = 0; r < L.pickN; r++) {
+      for (let r = 0; r <= L.pickN; r++) {
         const p = pickRows[r], it = pickItems[first + r];
-        p.g.visible = !!it;
+        p.g.position.y = L.bodyTop - (r + 0.5 - frac) * L.rowH;
+        p.g.visible = !!it && (r < L.pickN || frac > 1e-4);
         if (!it) continue;
         setIcon(T, p.icon, it.icon);
         p.label.set(truncate(it.label, chars));
@@ -440,7 +507,7 @@ const definition: WidgetDefinition<Props> = {
       track!.visible = thumb!.visible = over;
       if (over) {
         const th = Math.max(L.s * 1.5, (L.bodyH * L.pickN) / pickItems.length);
-        const u = first / (pickItems.length - L.pickN);
+        const u = pickScroll.pos / (pickItems.length - L.pickN);
         thumb!.scale.set(L.s * 0.16, th, 1);
         thumb!.position.y = L.bodyTop - th / 2 - u * (L.bodyH - th);
       }
@@ -449,7 +516,8 @@ const definition: WidgetDefinition<Props> = {
     // ---- interaction
     let dragHand: string | null = null;
     let dragPart = '';
-    let dragY0 = 0, scroll0 = 0, dragMoved = false;
+    let dragY0 = 0, dragMoved = false, wasGliding = false;
+    const activeScroll = () => (channelId() ? chatScroll : pickScroll);
 
     function tap(part: string): void {
       if (part === 'back') {
@@ -462,14 +530,15 @@ const definition: WidgetDefinition<Props> = {
         } else {
           pickView = '';
         }
-        pickScroll = 0;
+        pickStale = true;
+        pickScroll.scrollTo(0, false);
         dirty = true;
         return;
       }
       if (part.startsWith('pick:')) {
-        const it = pickItems[Math.round(pickScroll) + Number(part.slice(5))];
+        const it = pickItems[Math.floor(pickScroll.pos) + Number(part.slice(5))];
         if (!it) return;
-        if (it.key.startsWith('view:')) { pickView = it.key.slice(5); pickScroll = 0; dirty = true; }
+        if (it.key.startsWith('view:')) { pickView = it.key.slice(5); pickStale = true; pickScroll.scrollTo(0, false); dirty = true; }
         else open(it.key);
       }
     }
@@ -480,7 +549,7 @@ const definition: WidgetDefinition<Props> = {
 
     return {
       onProps(p, prev) {
-        if (p.width !== prev.width || p.lines !== prev.lines || p.textSize !== prev.textSize) build();
+        if (p.width !== prev.width || p.lines !== prev.lines || p.textSize !== prev.textSize) { laid = []; build(); }
         if (p.prefix !== prev.prefix) { subscribeMeta(); chatSub = ''; }
         if (p.channelId !== prev.channelId || p.prefix !== prev.prefix) subscribeChat();
         dirty = true;
@@ -498,31 +567,30 @@ const definition: WidgetDefinition<Props> = {
           dragHand = e.hand;
           dragPart = part;
           dragY0 = e.localPoint[1];
-          scroll0 = channelId() ? scroll : pickScroll;
           dragMoved = false;
+          wasGliding = activeScroll().active;
+          activeScroll().stop(); // a pinch on a gliding list catches it
           return;
         }
         if (e.hand !== dragHand) return;
         if (e.phase === 'move') {
           const dy = e.localPoint[1] - dragY0;
-          if (!dragMoved && Math.abs(dy) > L.s * 1.2 && dragPart !== 'back') dragMoved = true;
-          if (!dragMoved) return;
-          if (channelId()) {
-            // Pull the messages down to read older ones (about two lines per message).
-            const max = Math.max(0, (chat?.messages.length ?? 1) - 1);
-            const s = Math.min(max, Math.max(0, scroll0 - dy / (L.lineH * 2.5)));
-            if (Math.round(s) !== Math.round(scroll)) dirty = true;
-            scroll = s;
-          } else {
-            const max = Math.max(0, pickItems.length - L.pickN);
-            const s = Math.min(max, Math.max(0, scroll0 + dy / L.rowH));
-            if (Math.round(s) !== Math.round(pickScroll)) dirty = true;
-            pickScroll = s;
+          if (!dragMoved && Math.abs(dy) > L.s * 1.2 && dragPart !== 'back') {
+            dragMoved = true;
+            dragY0 = e.localPoint[1]; // follow the hand from here on, without a jump
+            activeScroll().dragStart();
+            return;
           }
+          if (!dragMoved) return;
+          // Content follows the hand: pulling the messages down shows older ones (pos grows);
+          // pulling the list up shows later rows.
+          if (channelId()) chatScroll.dragMove(-dy);
+          else pickScroll.dragMove(dy / L.rowH);
           return;
         }
         dragHand = null;
-        if (e.phase === 'end' && !dragMoved) tap(dragPart);
+        if (dragMoved) { activeScroll().dragEnd(e.phase === 'end'); return; }
+        if (e.phase === 'end' && !wasGliding) tap(dragPart);
       },
       update(dt) {
         if (channelId()) {
@@ -530,7 +598,9 @@ const definition: WidgetDefinition<Props> = {
           if (lease > LEASE_S) requestOpen();
         }
         if (watch.changed()) dirty = true; // real glyph heights arrived: lay out again
-        if (!dirty) return;
+        if (chatScroll.step(dt)) dirty = true;
+        if (pickScroll.step(dt)) dirty = true;
+        if (!dirty) { chatView?.update(); pickViewport?.update(); return; } // clip planes follow the card while it moves
         dirty = false;
         render();
       },
