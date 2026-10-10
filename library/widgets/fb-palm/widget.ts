@@ -14,7 +14,7 @@
 //   {path: absolute, name, type: 'file'|'dir'|'link', position: [x,y,z] space coords (card center),
 //    rotation: [x,y,z,w] space coords (yaw only; the card's +Z faces the user), from: entityId,
 //    reply: '<prefix>.fb-palm.<entityId>.placed', nonce, t: ms}
-//   A handler spawns a root entity there (e.g. `fb-columns` for a dir, a preview for a file) and may ack
+//   A handler spawns a root entity there (e.g. `explorer` for a dir, a preview for a file) and may ack
 //   on `reply` with {nonce, ok: true, entity?} — the ghost then says "placed".
 // Widgets cannot create root (world-anchored) entities: ctx.spawnChild children follow their parent, i.e.
 // the hand. The ghost is drawn inside this widget, counter-transformed every frame against the hand.

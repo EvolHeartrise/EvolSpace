@@ -1,4 +1,4 @@
-// fb-columns — "Files · Columns": Miller columns on an arc (via the `files` source).
+// explorer — Miller columns on an arc (via the `files` source).
 //
 // Every folder on the current path is a narrow column (folders first, typed Lucide icons, sizes and
 // ages); the folder you opened stays highlighted in its parent column, so the path reads left to
@@ -13,8 +13,8 @@
 // folder, or a crumb — jumps straight back to that level. The path and the previewed file persist in
 // the `path` / `file` props.
 //
-// Requests go to <prefix>.request with per-entity reply channels: <prefix>.fb-columns.<id>.c<depth>
-// (one per column depth) and <prefix>.fb-columns.<id>.preview; replies are matched by nonce.
+// Requests go to <prefix>.request with per-entity reply channels: <prefix>.explorer.<id>.c<depth>
+// (one per column depth) and <prefix>.explorer.<id>.preview; replies are matched by nonce.
 
 import type { ChannelValue, InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
 import type * as THREE from 'three';
@@ -197,7 +197,7 @@ interface ColView {
 
 const definition: WidgetDefinition<Props> = {
   description:
-    "Files · Columns — Miller-column file browser (via the 'files' source) on an arc around the viewer: each folder of the path is a column " +
+    "Explorer — Miller-column file browser (via the 'files' source) on an arc around the viewer: each folder of the path is a column " +
     '(folders first, typed icons, sizes, ages) and the opened folder stays highlighted; tap a folder to open the next column, a file to preview it ' +
     '(syntax-highlighted text or image). Pinch-drag scrolls a column, swipe right / Back goes up, tap a header or crumb to jump back. ' +
     'Props: path, file (persisted), columns, rows, radius, showHidden. Inputs: path, preview, command ("back", "home", "open <name>", …).',
@@ -220,14 +220,14 @@ const definition: WidgetDefinition<Props> = {
     selected: { type: 'string', description: 'Absolute path of the file last opened for preview.' },
     folder: { type: 'string', description: 'Display path of the deepest open folder (on change).' },
   },
-  interactions: [dragBinding('fb-columns-drag', 'drag')],
+  interactions: [dragBinding('explorer-drag', 'drag')],
   size: [1.8, 0.55, 0.3],
   create(ctx) {
     const T = ctx.THREE;
     const theme = ctx.theme;
     const props = ctx.props;
     const prefix = () => String(props.prefix || 'files');
-    const chan = (purpose: string) => `${prefix()}.fb-columns.${ctx.entityId}.${purpose}`;
+    const chan = (purpose: string) => `${prefix()}.explorer.${ctx.entityId}.${purpose}`;
     const nRows = () => Math.max(6, Math.min(24, Math.round(Number(props.rows) || 12)));
     const nCols = () => Math.max(2, Math.min(5, Math.round(Number(props.columns) || 3)));
     const H = () => HEAD + nRows() * ROW + 2 * PAD;
@@ -430,7 +430,7 @@ const definition: WidgetDefinition<Props> = {
           const c = last();
           const idx = c?.entries ? findEntry(c.entries, arg) : -1;
           if (idx >= 0) tapEntry(cols.length - 1, c.entries![idx]);
-          else if (arg) ctx.event('fb-columns.notfound', { query: arg, folder: currentFolder() });
+          else if (arg) ctx.event('explorer.notfound', { query: arg, folder: currentFolder() });
           break;
         }
         case 'scroll': {
@@ -439,7 +439,7 @@ const definition: WidgetDefinition<Props> = {
           if (c?.entries && Number.isFinite(n)) { c.scroll = Math.max(0, Math.min(c.entries.length - nRows(), Math.round(c.scroll) + n)); dirty = true; }
           break;
         }
-        default: if (s) ctx.event('fb-columns.unknown-command', { command: s });
+        default: if (s) ctx.event('explorer.unknown-command', { command: s });
       }
     }
 

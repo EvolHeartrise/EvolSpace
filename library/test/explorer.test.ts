@@ -1,7 +1,7 @@
-// fb-columns — Miller columns on an arc: chain restore, one pinch per level, scrolling, back (button,
+// explorer — Miller columns on an arc: chain restore, one pinch per level, scrolling, back (button,
 // swipe, header, crumbs), previews, persistence, commands.
 import { expect, it } from 'vitest';
-import fbColumns, { age, arcPlace, baseName, chainFor, findEntry, iconFor, joinPath, metaLabel, type Entry } from '../widgets/fb-columns/widget.ts';
+import explorer, { age, arcPlace, baseName, chainFor, findEntry, iconFor, joinPath, metaLabel, type Entry } from '../widgets/explorer/widget.ts';
 import { mount, type Harness } from './harness.ts';
 
 const HOME = '/home/u';
@@ -30,7 +30,7 @@ const FS: Record<string, string> = {
   [`${HOME}/git projects`]: 'EvolSpace/ other/',
   [`${HOME}/git projects/EvolSpace`]: 'apps/ library/ packages/ README.md package.json',
   [`${HOME}/git projects/EvolSpace/library`]: 'shared/ widgets/ README.md',
-  [`${HOME}/git projects/EvolSpace/library/widgets`]: 'fb-columns/ gauge/ README.md',
+  [`${HOME}/git projects/EvolSpace/library/widgets`]: 'explorer/ gauge/ README.md',
   [`${HOME}/git projects/EvolSpace/library/widgets/gauge`]: 'widget.ts',
 };
 
@@ -74,11 +74,11 @@ it('helpers: chains, paths, labels, arc', () => {
 });
 
 it('restores the column chain of the start path, one reply channel per depth', async () => {
-  const h = await mount(fbColumns, { path: '~/git projects/EvolSpace' });
+  const h = await mount(explorer, { path: '~/git projects/EvolSpace' });
   const lists = requests(h).filter((r) => r.cmd === 'list');
   expect(lists.map((r) => r.path)).toEqual(['~', '~/git projects', '~/git projects/EvolSpace']);
   expect(new Set(lists.map((r) => r.reply)).size).toBe(3);
-  for (const r of lists) expect(r.reply.startsWith('files.fb-columns.test-entity.')).toBe(true);
+  for (const r of lists) expect(r.reply.startsWith('files.explorer.test-entity.')).toBe(true);
   serve(h);
   for (const t of ['Home', 'EvolSpace', 'git projects', 'apps', 'README.md', '5 items', '2.0 KB · 1h']) expect(h.hasText(t), t).toBe(true);
   // ancestors keep the opened folder highlighted; it is the visible path
@@ -92,7 +92,7 @@ it('restores the column chain of the start path, one reply channel per depth', a
 });
 
 it('one pinch per level, slides old columns into crumbs, back by button / swipe / header / crumb', async () => {
-  const h = await mount(fbColumns, { path: '~/git projects/EvolSpace', columns: 3 });
+  const h = await mount(explorer, { path: '~/git projects/EvolSpace', columns: 3 });
   serve(h);
   const rowOf = (name: string): string => {
     for (const o of h.liveParts()) {
@@ -142,7 +142,7 @@ it('one pinch per level, slides old columns into crumbs, back by button / swipe 
 
 it('scrolls with pinch-drag (no tap), ignores cancelled presses', async () => {
   const many = Array.from({ length: 40 }, (_, i) => `f${String(i).padStart(2, '0')}.txt`).join(' ');
-  const h = await mount(fbColumns, { path: '/data', rows: 8 });
+  const h = await mount(explorer, { path: '/data', rows: 8 });
   for (const r of requests(h)) answer(h, r, r.path === '/data' ? many : 'data/');
   h.frame(40);
   expect(h.hasText('f00.txt')).toBe(true);
@@ -163,7 +163,7 @@ it('scrolls with pinch-drag (no tap), ignores cancelled presses', async () => {
 });
 
 it('previews files with syntax highlighting, persists the file, closes, asks Claude', async () => {
-  const h = await mount(fbColumns, { path: '~/git projects/EvolSpace/library/widgets/gauge' });
+  const h = await mount(explorer, { path: '~/git projects/EvolSpace/library/widgets/gauge' });
   serve(h);
   const v = h.liveParts().find((o) => o.name.startsWith('row:') && (o.parent!.children.some((c) => (c as unknown as { text?: string }).text === 'widget.ts')))!;
   h.press(v.name, 'drag');
@@ -196,7 +196,7 @@ it('previews files with syntax highlighting, persists the file, closes, asks Cla
 });
 
 it('restores a persisted file preview and handles commands, props and errors', async () => {
-  const h = await mount(fbColumns, { path: '~/git projects/EvolSpace', file: '~/git projects/EvolSpace/README.md' });
+  const h = await mount(explorer, { path: '~/git projects/EvolSpace', file: '~/git projects/EvolSpace/README.md' });
   expect(lastReq(h, 'preview')).toMatchObject({ path: '~/git projects/EvolSpace/README.md' });
   serve(h);
   h.input('command', 'open lib');
@@ -212,7 +212,7 @@ it('restores a persisted file preview and handles commands, props and errors', a
   expect(lastReq(h).hidden).toBe(true);
   h.input('command', 'open nothing-like-this');
   h.input('command', 'dance');
-  expect(h.rec.events.map((e) => e.name)).toEqual(['fb-columns.notfound', 'fb-columns.unknown-command']);
+  expect(h.rec.events.map((e) => e.name)).toEqual(['explorer.notfound', 'explorer.unknown-command']);
   await h.setProps({ path: '/srv' });
   expect(lastReq(h)).toMatchObject({ path: '/srv' });
   answer(h, lastReq(h), '', { error: 'Permission denied' });
@@ -227,7 +227,7 @@ it('restores a persisted file preview and handles commands, props and errors', a
 });
 
 it('screenshots (mirror) never persist navigation', async () => {
-  const h = await mount(fbColumns, { path: '/x' }, { isMirror: true });
+  const h = await mount(explorer, { path: '/x' }, { isMirror: true });
   for (const r of requests(h)) answer(h, r, 'a/');
   h.frame(10);
   expect(h.rec.setProps).toEqual([]);
@@ -235,7 +235,7 @@ it('screenshots (mirror) never persist navigation', async () => {
 });
 
 it("video previews: converting notice, then the converted file (another client's reply counts too)", async () => {
-  const h = await mount(fbColumns, { path: '~/git projects/EvolSpace' });
+  const h = await mount(explorer, { path: '~/git projects/EvolSpace' });
   serve(h);
   h.input('preview', '~/videos/clip.mov');
   const vr = lastReq(h, 'preview');
