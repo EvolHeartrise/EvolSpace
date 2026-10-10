@@ -233,6 +233,7 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
       deps.event('voice.utterance', { ...base, route: 'agent', agent: 'oneshot' });
       deps.oneshotAsk(text, agentContext(ctx, ents, {
         utteranceId: meta.utteranceId,
+        ...(ctx.head ? { head: ctx.head } : {}), // the agent's orb floats where the user was
         ...(meta.clientId ? { clientId: meta.clientId } : {}),
         ...(meta.simulated ? { simulated: true } : {}),
       }));

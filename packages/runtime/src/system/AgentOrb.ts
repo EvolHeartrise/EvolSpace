@@ -47,6 +47,7 @@ export class AgentOrb {
   private detail: RuntimeText;
   private state: OrbState = 'idle';
   private detailText = '';
+  private title: string | null = null;
   private stateStart = 0;
   private since: number | undefined = undefined;
   private lastElapsedShown = -1;
@@ -134,6 +135,13 @@ export class AgentOrb {
     this.level = Math.max(0, Math.min(1, v));
   }
 
+  /** Fixed label instead of the per-state one (one-off agent orbs show their request). */
+  setTitle(title: string | null): void {
+    if (title === this.title) return;
+    this.title = title;
+    this.applyLabel();
+  }
+
   setUnread(on: boolean): void {
     this.badge.visible = on;
   }
@@ -143,7 +151,7 @@ export class AgentOrb {
   }
 
   private applyLabel(): void {
-    this.label.set(LABELS[this.state]);
+    this.label.set(this.title ?? LABELS[this.state]);
     let d = truncate(this.detailText, 90);
     if (this.showsTimer()) {
       const el = formatElapsed(this.clock - this.stateStart);
