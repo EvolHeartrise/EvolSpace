@@ -32,6 +32,8 @@ const ICONS = [
   // files
   'folder', 'folder-open', 'file', 'file-text', 'file-code', 'file-image', 'file-archive', 'file-spreadsheet', 'file-terminal',
   'file-key', 'file-cog', 'braces', 'image', 'film', 'music', 'house', 'corner-left-up', 'eye', 'eye-off', 'message-square', 'hard-drive',
+  // file-browser variations
+  'search', 'star', 'clock', 'layout-grid', 'layout-list', 'columns-3', 'chart-pie', 'circle', 'folder-tree', 'folder-search', 'file-search', 'zoom-in', 'zoom-out', 'maximize-2', 'scan', 'grid-3x3', 'box', 'boxes', 'pin', 'hash', 'tag', 'sparkles', 'layers', 'orbit', 'command', 'chevrons-left', 'chevrons-right', 'undo-2', 'arrow-down-wide-narrow', 'calendar', 'hard-drive-download', 'database', 'folder-plus', 'folder-git-2', 'git-commit-horizontal', 'package', 'scale', 'shapes', 'circle-dot-dashed', 'compass', 'target', 'chevron-first', 'chevron-last', 'move', 'hand', 'pointer',
 ];
 
 const nodes = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/lucide-static/icon-nodes.json'), 'utf8'));
