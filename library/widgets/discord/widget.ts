@@ -1,29 +1,34 @@
-// discord — a Discord chat card: one DM, group DM or server channel, live, newest message at the
-// bottom (pinch-drag the messages to scroll back: smooth, follows the hand, glides after a flick —
-// shared/scroll.ts). Without a channel (or after the back button) the
-// card is a picker: Direct messages / servers → channels; pinch a row to open it.
+// discord — a Discord chat card in Discord's own look (dark theme, cozy message layout): one DM,
+// group DM or server channel, live, newest message at the bottom; avatars, reply previews, inline
+// images. Pinch-drag the messages to scroll (smooth: follows the hand, glides after a flick —
+// shared/scroll.ts). Without a channel (or after the back button) the card is a picker:
+// Direct messages + servers (icons, unread pills, mention badges) → channels (unread in white).
 //
 // Data comes from the `discord` source (library/sources/discord, signed in with the user's account):
 //   <prefix>.status    {state: 'connecting'|'ready'|'error', user?: {id, name}, error?}
-//   <prefix>.channels  {dms: Entry[], guilds: [{id, name, channels: Entry[]}]}
-//                      Entry = {id, name, kind: 'dm'|'group'|'text'|'announcement'|'thread'|'forum', category?}
+//   <prefix>.channels  {dms: Entry[], guilds: [{id, name, icon?, unread?, mentions?, muted?, channels: Entry[]}]}
+//                      Entry = {id, name, kind, category?, icon?, unread?, mentions?, muted?}
 //   <prefix>.ch.<id>   {id, name, kind, guild?, messages: Msg[] (oldest → newest), loading?, error?}
-//                      Msg = {id, author: {id, name}, content, ts, edited?, attachments?: [{name}], embeds?: [{title?, description?}],
-//                             reply?: {author, content}, mine?, pending?}
-//   <prefix>.request   ← {cmd: 'open', channel} from this card (on open, then every 60 s while it shows the channel)
+//                      Msg = {id, author: {id, name, avatar?}, content, ts, edited?, attachments?: [{name, image?: {src, w, h}}],
+//                             embeds?: [{title?, description?}], reply?: {author, content, avatar?}, mine?, pending?}
+//   <prefix>.request   ← {cmd: 'open', channel} from this card (on open, then every 60 s while it shows the channel;
+//                        the source marks the channel read while it is shown)
 // Sending is the source's {cmd: 'send', channel, content} on <prefix>.request (Claude does it on request).
+//
+// Scrolling without flicker: a message keeps its slot (texts, avatar) for as long as it stays in view,
+// so scrolling only moves slots; a slot that gets a new message stays hidden until troika has laid out
+// its text (no stale wrapping), and measured heights replace estimates without moving what is in view.
 
 import type { ChannelValue, InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
 import type * as THREE from 'three';
 import { disposeTree, hitMaterial, ownMaterial, sharedGeometry } from '../../shared/resources.ts';
 import { makeText, MeasureWatch, setColorRanges, textSize, type Text } from '../../shared/text.ts';
-import { hexToInt, resolveColor } from '../../shared/color.ts';
+import { hexToInt } from '../../shared/color.ts';
 import { truncate } from '../../shared/format.ts';
 import { estimateTextBlock } from '../../shared/layout.ts';
-import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { makeIcon, setIcon } from '../../shared/icons.ts';
-import { STYLE } from '../../shared/style.ts';
+import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   channelId: string;
@@ -34,32 +39,39 @@ interface Props extends Record<string, unknown> {
   textSize: number;
 }
 
-interface Entry { id: string; name: string; kind: string; category?: string }
-interface Guild { id: string; name: string; channels: Entry[] }
+interface Entry { id: string; name: string; kind: string; category?: string; icon?: string; unread?: boolean; mentions?: number; muted?: boolean }
+interface Guild { id: string; name: string; icon?: string; unread?: boolean; mentions?: number; muted?: boolean; channels: Entry[] }
 interface Msg {
   id: string;
-  author: { id: string; name: string };
+  author: { id: string; name: string; avatar?: string };
   content: string;
   ts: number;
   edited?: boolean;
-  attachments?: Array<{ name?: string }>;
+  attachments?: Array<{ name?: string; image?: { src: string; w: number; h: number } }>;
   embeds?: Array<{ title?: string; description?: string }>;
-  reply?: { author?: string; content?: string };
+  reply?: { author?: string; content?: string; avatar?: string };
   mine?: boolean;
   pending?: boolean;
 }
 interface ChannelData { id: string; name: string; kind: string; guild?: string; messages: Msg[]; loading?: boolean; error?: string }
-interface PickRow { key: string; label: string; meta: string; icon: string }
-/** A message laid out for the chat view: its text, whether it starts an author group, its height (m). */
-interface Laid { id: string; body: string; head: boolean; h: number; measured: boolean }
+/** A picker row: a server / the DM list (view:…), a channel or DM (its id), or a category header. */
+interface PickRow { key: string; label: string; icon: string; image?: string; unread: boolean; mentions: number; muted: boolean; header?: boolean }
+/** A message laid out for the chat view. */
+interface Laid { id: string; body: string; ranges: Record<number, number> | null; head: boolean; reply: boolean; image: { src: string; w: number; h: number } | null; h: number }
 
-const PAD = 0.016;
-/** Message slots (a message = author line + wrapped body); more than ever fit the body. */
-const SLOTS = 14;
-/** A new author line after this gap even for the same author. */
+/** Discord's dark theme. */
+const DC = {
+  bg: '#313338', side: '#2b2d31', dark: '#1e1f22', text: '#dbdee1', head: '#f2f3f5', muted: '#949ba4', channel: '#80848e',
+  faint: '#6d6f78', link: '#00a8fc', mention: '#c9cdfb', input: '#383a40', divider: '#3f4147', spine: '#4e5058',
+  green: '#23a55a', red: '#f23f43', blurple: '#5865f2', thumb: '#1a1b1e',
+};
+const SLOTS = 16;
+/** A new author group after this gap even for the same author (Discord: 7 min). */
 const GROUP_MS = 7 * 60_000;
 const LEASE_S = 60;
 
+/** The string a troika text currently holds. */
+const textOf = (t: Text): string => (t as unknown as { text: string }).text;
 const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
 
 export function parseChannelData(v: unknown): ChannelData | null {
@@ -72,54 +84,79 @@ export function parseChannelData(v: unknown): ChannelData | null {
     const a = (r.author && typeof r.author === 'object' ? r.author : {}) as Record<string, unknown>;
     const ts = typeof r.ts === 'number' ? r.ts : new Date(str(r.ts)).getTime();
     messages.push({
-      id: str(r.id), author: { id: str(a.id), name: str(a.name) || 'unknown' }, content: str(r.content), ts: Number.isFinite(ts) ? ts : 0,
+      id: str(r.id), author: { id: str(a.id), name: str(a.name) || 'unknown', avatar: str(a.avatar) || undefined }, content: str(r.content), ts: Number.isFinite(ts) ? ts : 0,
       edited: r.edited === true, mine: r.mine === true, pending: r.pending === true,
-      attachments: Array.isArray(r.attachments) ? (r.attachments as Array<{ name?: string }>) : undefined,
-      embeds: Array.isArray(r.embeds) ? (r.embeds as Array<{ title?: string; description?: string }>) : undefined,
-      reply: r.reply && typeof r.reply === 'object' ? (r.reply as { author?: string; content?: string }) : undefined,
+      attachments: Array.isArray(r.attachments) ? (r.attachments as Msg['attachments']) : undefined,
+      embeds: Array.isArray(r.embeds) ? (r.embeds as Msg['embeds']) : undefined,
+      reply: r.reply && typeof r.reply === 'object' ? (r.reply as Msg['reply']) : undefined,
     });
   }
   return { id: str(o.id), name: str(o.name), kind: str(o.kind), guild: str(o.guild) || undefined, messages, loading: o.loading === true, error: str(o.error) || undefined };
 }
 
-/** Everything shown for a message body, one string (attachments, embeds, a reply quote). */
-export function messageBody(m: Msg, maxChars: number): string {
-  const parts: string[] = [];
-  if (m.reply && (m.reply.author || m.reply.content)) parts.push(`> ${m.reply.author ?? ''}: ${truncate((m.reply.content ?? '').replace(/\s+/g, ' '), 60)}`);
-  if (m.content) parts.push(m.content);
-  for (const a of m.attachments ?? []) parts.push(`[file] ${a.name ?? 'attachment'}`);
+/** A message's text (content, non-image files, embeds, "(edited)") and its color ranges. */
+export function messageBody(m: Msg, maxChars: number, ints: { text: number; link: number; mention: number; faint: number } | null = null): { text: string; ranges: Record<number, number> | null } {
+  const parts: Array<[string, 'text' | 'link']> = [];
+  if (m.content) parts.push([m.content, 'text']);
+  for (const a of m.attachments ?? []) if (!a.image) parts.push([`[file] ${a.name ?? 'attachment'}`, 'link']);
   for (const e of m.embeds ?? []) {
     const t = [e.title, e.description].filter(Boolean).join(' — ');
-    if (t) parts.push(`| ${truncate(t.replace(/\s+/g, ' '), 140)}`);
+    if (t) parts.push([`| ${truncate(t.replace(/\s+/g, ' '), 140)}`, 'link']);
   }
-  let s = parts.join('\n') || ' ';
-  if (m.edited) s += ' (edited)';
-  return s.length > maxChars ? `${s.slice(0, maxChars - 1)}…` : s;
+  let text = '';
+  const ranges: Record<number, number> = {};
+  for (const [p, kind] of parts) {
+    if (text) text += '\n';
+    if (ints) ranges[text.length] = kind === 'link' ? ints.link : ints.text;
+    if (ints && kind === 'text') {
+      const re = /(^|\s)(@[^\s@]+)/g;
+      let mm: RegExpExecArray | null;
+      while ((mm = re.exec(p))) {
+        const at = text.length + mm.index + mm[1].length;
+        ranges[at] = ints.mention;
+        ranges[at + mm[2].length] = ints.text;
+      }
+    }
+    text += p;
+  }
+  if (text.length > maxChars) text = `${text.slice(0, maxChars - 1)}…`;
+  if (m.edited) {
+    if (ints) ranges[text.length] = ints.faint;
+    text += text ? ' (edited)' : '(edited)';
+  }
+  return { text, ranges: ints ? ranges : null };
 }
 
-function clock(ts: number, now = Date.now()): string {
+/** "Today at 4:05 PM" / "Yesterday at …" / "10/09/2026 4:05 PM", like Discord. */
+export function discordTime(ts: number, now = Date.now()): string {
   const d = new Date(ts);
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  const n = new Date(now);
-  if (d.toDateString() === n.toDateString()) return hm;
-  return `${d.toLocaleDateString('en', { month: 'short', day: 'numeric' })} ${hm}`;
+  const time = d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(new Date(now)) - day(d)) / 86_400_000);
+  if (diff === 0) return `Today at ${time}`;
+  if (diff === 1) return `Yesterday at ${time}`;
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()} ${time}`;
 }
 
+/** Names without emoji (the bundled fonts have none: they would show as boxes), e.g. "👋welcome" → "welcome". */
+export const cleanName = (s: string): string => s.replace(/[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\uFE0F\u200D\u20E3]/gu, '').replace(/\s{2,}/g, ' ').trim() || s;
 const kindIcon = (kind: string) => (kind === 'dm' ? 'at-sign' : kind === 'group' ? 'users' : 'hash');
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 3) || '?';
 
 const definition: WidgetDefinition<Props> = {
   description:
-    'Discord chat card for one DM / group DM / server channel (prop channelId; empty = picker: Direct messages, servers → channels). ' +
-    'Live messages from the discord source (signed in as the user), newest at the bottom; pinch-drag to scroll back, back button returns to ' +
-    "the picker. Send with channel_set <prefix>.request {cmd:'send', channel: channelId, content} (only on the user's explicit request).",
-  version: '1.0.0',
+    'Discord chat card in Discord\'s look for one DM / group DM / server channel (prop channelId; empty = picker: Direct messages, servers → channels, ' +
+    'with unread pills and mention badges). Live messages from the discord source (signed in as the user) with avatars, replies and inline ' +
+    'images, newest at the bottom; pinch-drag to scroll, back button returns to the picker. Send with channel_set <prefix>.request ' +
+    "{cmd:'send', channel: channelId, content} (only on the user's explicit request).",
+  version: '2.0.0',
   props: {
     channelId: { type: 'string', default: '', description: "Discord channel id (DM, group DM or server channel); '' shows the picker." },
     prefix: { type: 'string', default: 'discord', description: 'Channel prefix of the discord source.' },
     title: { type: 'string', default: '', description: "Card title; '' = the channel's name." },
     width: { type: 'number', default: 0.5, min: 0.25, max: 1.5, step: 0.01, description: 'Card width (m).' },
-    lines: { type: 'integer', default: 18, min: 6, max: 60, description: 'Height of the message area in text lines.' },
-    textSize: { type: 'number', default: 0.0115, min: 0.006, max: 0.04, step: 0.0005, description: 'Message text em height (m); the layout scales with it.' },
+    lines: { type: 'integer', default: 16, min: 6, max: 60, description: 'Height of the message area in text lines.' },
+    textSize: { type: 'number', default: 0.0115, min: 0.006, max: 0.04, step: 0.0005, description: "Message text em height (m) = Discord's 16 px; the whole layout scales with it." },
   },
   inputs: { channelId: { type: 'string', description: 'Switch to this Discord channel id.' } },
   outputs: { channelId: { type: 'string', description: 'The channel now shown (on open / pick).' } },
@@ -127,9 +164,11 @@ const definition: WidgetDefinition<Props> = {
   size: [0.5, 0.5, 0.01],
   create(ctx) {
     const T = ctx.THREE;
-    const theme = ctx.theme;
-    const textInt = hexToInt(resolveColor(theme, 'text'));
-    const dimInt = hexToInt(resolveColor(theme, 'textDim'));
+    const I = {
+      text: hexToInt(DC.text), head: hexToInt(DC.head), muted: hexToInt(DC.muted), faint: hexToInt(DC.faint),
+      link: hexToInt(DC.link), mention: hexToInt(DC.mention),
+    };
+    const Z = { bg: 0.0005, content: 0.001, over: 0.002, text: 0.003 };
 
     // ---- state
     let status: { state: string; user?: { id?: string; name?: string }; error?: string } | null = null;
@@ -138,19 +177,55 @@ const definition: WidgetDefinition<Props> = {
     let chat: ChannelData | null = null;
     let pickView = ''; // '' = home, 'dms', or a guild id
     let pickStale = true;
+    let pickItems: PickRow[] = [];
     const pickScroll = new SmoothScroll(); // rows
-    // meters above the newest message (0 = at the bottom); a "row" ≈ two text lines for the fling thresholds
-    const chatScroll = new SmoothScroll({ unit: ctx.props.textSize * 2.5 });
-    let laid: Laid[] = []; // chat messages, oldest → newest
+    let chatScroll = new SmoothScroll(); // meters above the newest message (0 = at the bottom)
+    let laid: Laid[] = []; // oldest → newest
     let offsets: number[] = []; // bottom of each message above the newest's bottom (m)
     let total = 0;
-    const slotMsg: number[] = []; // message index each slot showed in the last render (-1 = none)
     let dirty = true;
     let lease = 0;
     let offChat: (() => void) | null = null;
     let chatSub = '';
 
+    // ---- textures (avatars, icons, images): same-origin /media files, cached per card
+    const textures = new Map<string, THREE.Texture>();
+    const canLoad = typeof document !== 'undefined';
+    let placeholder: THREE.Texture | null = null;
+    function placeholderTex(): THREE.Texture {
+      if (!placeholder) {
+        placeholder = new T.DataTexture(new Uint8Array([88, 101, 242, 255]), 1, 1); // blurple, like a default avatar
+        placeholder.needsUpdate = true;
+      }
+      return placeholder;
+    }
+    /** The texture for `src` once loaded (loading starts on first ask), else null. */
+    function tex(src: string | undefined): THREE.Texture | null {
+      if (!src || !canLoad) return null;
+      let t = textures.get(src);
+      if (!t) {
+        t = new T.TextureLoader().load(src, (x) => { x.userData.loaded = true; dirty = true; });
+        t.colorSpace = T.SRGBColorSpace;
+        textures.set(src, t);
+      }
+      return t.userData.loaded ? t : null;
+    }
+    function setMap(mat: THREE.MeshBasicMaterial, src: string | undefined): void {
+      const t = tex(src) ?? placeholderTex();
+      if (mat.map !== t) mat.map = t;
+    }
+
     // ---- built parts
+    interface Slot {
+      g: THREE.Group; avatar: THREE.Mesh; avatarMat: THREE.MeshBasicMaterial; name: Text; time: Text; body: Text;
+      reply: THREE.Group; spine: THREE.Mesh; spine2: THREE.Mesh; mini: THREE.Mesh; miniMat: THREE.MeshBasicMaterial; replyText: Text;
+      img: THREE.Mesh; imgMat: THREE.MeshBasicMaterial;
+      msg: string; ready: boolean; waitInfo: unknown; waitFrames: number;
+    }
+    interface PickSlot {
+      g: THREE.Group; icon: THREE.Mesh; disc: THREE.Mesh; discMat: THREE.MeshBasicMaterial; initials: Text; label: Text; header: Text;
+      pill: THREE.Mesh; badge: THREE.Mesh; badgeText: Text;
+    }
     let group: THREE.Group | null = null;
     let backBtn: THREE.Mesh | null = null;
     let kindIconMesh: THREE.Mesh | null = null;
@@ -159,9 +234,10 @@ const definition: WidgetDefinition<Props> = {
     let dotMat: THREE.MeshBasicMaterial | null = null;
     let emptyText: Text | null = null;
     let bodyHit: THREE.Mesh | null = null;
-    const slots: Array<{ g: THREE.Group; head: Text; body: Text }> = [];
-    const pickRows: Array<{ g: THREE.Group; icon: THREE.Mesh; label: Text; meta: Text }> = [];
-    let pickItems: PickRow[] = [];
+    let inputBar: THREE.Group | null = null;
+    let inputText: Text | null = null;
+    const slots: Slot[] = [];
+    const pickRows: PickSlot[] = [];
     let thumb: THREE.Mesh | null = null;
     let track: THREE.Mesh | null = null;
     let chatView: ScrollViewport | null = null;
@@ -171,24 +247,35 @@ const definition: WidgetDefinition<Props> = {
 
     function layout() {
       const s = ctx.props.textSize, w = ctx.props.width;
-      const lineH = s * 1.25;
-      const headerH = s * 3;
-      const bodyH = ctx.props.lines * lineH;
-      const h = PAD + headerH + bodyH + PAD;
-      const top = h / 2 - PAD;
-      const bodyTop = top - headerH, bodyBottom = -h / 2 + PAD;
-      const x0 = -w / 2 + PAD, x1 = w / 2 - PAD - s * 0.6;
-      const rowH = s * 2.7;
-      return { s, w, h, lineH, headerH, bodyH, top, bodyTop, bodyBottom, x0, x1, textW: x1 - x0, rowH, pickN: Math.max(3, Math.floor(bodyH / rowH)) };
+      const P = s / 16; // one Discord CSS pixel
+      const headerH = 48 * P, inputH = 44 * P, inputGap = 22 * P;
+      const bodyH = ctx.props.lines * 22 * P;
+      const h = headerH + bodyH + inputH + inputGap;
+      const top = h / 2, bottom = -h / 2;
+      const headerBottom = top - headerH;
+      const inputTop = bottom + inputGap + inputH;
+      const x0 = -w / 2;
+      const textX = x0 + 72 * P;
+      const textW = w / 2 - 22 * P - textX;
+      return { s, P, w, h, top, bottom, headerH, headerBottom, inputTop, inputH, inputGap, bodyH, x0, textX, textW, rowH: 40 * P, pickN: Math.max(3, Math.floor((headerBottom - bottom - 8 * P) / (40 * P))) };
     }
 
     const channelId = () => ctx.props.channelId.trim();
     const prefix = () => ctx.props.prefix.trim() || 'discord';
-    const authorColor = (m: Msg) => {
-      if (m.mine) return resolveColor(theme, 'accent');
-      let h = 0;
-      for (let i = 0; i < m.author.id.length; i++) h = (h * 31 + m.author.id.charCodeAt(i)) | 0;
-      return theme.palette[Math.abs(h) % theme.palette.length] ?? theme.accent;
+    const plane = (color: string, w: number, h: number, x: number, y: number, z: number) => {
+      const m = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, color));
+      m.scale.set(w, h, 1);
+      m.position.set(x, y, z);
+      m.raycast = () => {};
+      return m;
+    };
+    const disc = (d: number, x: number, y: number) => {
+      const mat = new T.MeshBasicMaterial({ color: 0xffffff, map: placeholderTex() });
+      const m = new T.Mesh(sharedGeometry(T, 'disc'), mat);
+      m.scale.set(d, d, 1);
+      m.position.set(x, y, Z.content);
+      m.raycast = () => {};
+      return { m, mat };
     };
 
     function build(): void {
@@ -196,129 +283,172 @@ const definition: WidgetDefinition<Props> = {
       slots.length = 0;
       pickRows.length = 0;
       L = layout();
+      const { P } = L;
       const g = (group = new T.Group());
-      g.add(ctx.ui.panel(L.w, L.h));
+      g.add(ctx.ui.panel(L.w, L.h, { color: DC.bg, radius: 8 * P }));
 
-      const hy = L.top - L.headerH / 2 + L.s * 0.2;
-      backBtn = ctx.ui.panel(L.s * 2.2, L.s * 2.2, { color: theme.surface });
-      backBtn.position.set(L.x0 + L.s * 1.1, hy, STYLE.zContent + 0.006); // in front of the row hit boxes
+      // header: [‹] # name  guild ·······  ●
+      const hy = L.top - L.headerH / 2;
+      backBtn = ctx.ui.panel(28 * P, 28 * P, { color: DC.side, radius: 6 * P });
+      backBtn.position.set(L.x0 + 22 * P, hy, Z.content + 0.006); // in front of the row hit boxes
       backBtn.name = 'back';
       ctx.interactive(backBtn);
-      const chev = makeIcon(ctx, 'chevron-left', { size: L.s * 1.4, color: resolveColor(theme, 'text') });
-      chev.position.z = STYLE.zText;
+      const chev = makeIcon(ctx, 'chevron-left', { size: 18 * P, color: DC.muted });
+      chev.position.z = Z.text;
       chev.raycast = () => {};
       backBtn.add(chev);
-      kindIconMesh = makeIcon(ctx, 'hash', { size: L.s * 1.3, color: resolveColor(theme, 'textDim') });
+      kindIconMesh = makeIcon(ctx, 'hash', { size: 22 * P, color: DC.faint });
       kindIconMesh.raycast = () => {};
-      kindIconMesh.position.set(L.x0 + L.s * 3.3, hy, STYLE.zText);
-      titleText = makeText(ctx, '', { size: L.s * 1.35, anchorX: 'left', anchorY: 'bottom', color: theme.text, weight: 'semibold', whiteSpace: 'nowrap' });
-      titleText.position.set(L.x0 + L.s * 4.3, hy - L.s * 0.1, STYLE.zText);
-      subText = makeText(ctx, '', { size: L.s * 0.8, anchorX: 'left', anchorY: 'top', color: theme.textDim, whiteSpace: 'nowrap' });
-      subText.position.set(L.x0 + L.s * 4.3, hy - L.s * 0.25, STYLE.zText);
-      dotMat = ownMaterial(T, theme.textDim);
+      kindIconMesh.position.set(L.x0 + 52 * P, hy, Z.text);
+      titleText = makeText(ctx, '', { size: 16 * P, anchorX: 'left', anchorY: 'middle', color: DC.head, weight: 'semibold', whiteSpace: 'nowrap' });
+      titleText.position.set(L.x0 + 68 * P, hy, Z.text);
+      subText = makeText(ctx, '', { size: 13 * P, anchorX: 'left', anchorY: 'middle', color: DC.muted, whiteSpace: 'nowrap' });
+      subText.position.set(L.x0 + 68 * P, hy, Z.text); // x set after the title is measured
+      dotMat = ownMaterial(T, DC.faint);
       const dot = new T.Mesh(sharedGeometry(T, 'disc'), dotMat);
-      dot.scale.setScalar(L.s * 0.45);
-      dot.position.set(L.w / 2 - PAD - L.s * 0.45, hy, STYLE.zText);
+      dot.scale.setScalar(10 * P);
+      dot.position.set(L.w / 2 - 18 * P, hy, Z.text);
       dot.raycast = () => {};
-      const rule = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.border));
-      rule.scale.set(L.w - 2 * PAD, 0.0008, 1);
-      rule.position.set(0, L.bodyTop + L.s * 0.3, STYLE.zContent);
-      rule.raycast = () => {};
-      g.add(backBtn, kindIconMesh, titleText, subText, dot, rule);
+      g.add(backBtn, kindIconMesh, titleText, subText, dot, plane(DC.dark, L.w, 1.5 * P, 0, L.headerBottom, Z.over));
 
-      // Whole message area: a drag target (scroll) that leaves the card's padding grabbable.
+      // the message area: drag target for scrolling (chat view only)
       bodyHit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
-      bodyHit.scale.set(L.w - 2 * PAD, L.bodyH, 0.01);
-      bodyHit.position.set(0, (L.bodyTop + L.bodyBottom) / 2, 0);
+      bodyHit.scale.set(L.w - 16 * P, L.headerBottom - L.inputTop, 0.01);
+      bodyHit.position.set(0, (L.headerBottom + L.inputTop) / 2, 0);
       bodyHit.name = 'body';
       ctx.interactive(bodyHit);
       g.add(bodyHit);
 
-      emptyText = makeText(ctx, '', { size: L.s, anchorX: 'center', anchorY: 'middle', color: theme.textDim, maxWidth: L.w - 4 * PAD, textAlign: 'center' });
-      emptyText.position.set(0, (L.bodyTop + L.bodyBottom) / 2, STYLE.zText);
+      emptyText = makeText(ctx, '', { size: 14 * P, anchorX: 'center', anchorY: 'middle', color: DC.muted, maxWidth: L.w - 64 * P, textAlign: 'center' });
+      emptyText.position.set(0, (L.headerBottom + L.inputTop) / 2, Z.text);
       g.add(emptyText);
 
-      chatView = new ScrollViewport(T, g, L.bodyBottom, L.bodyTop);
-      pickViewport = new ScrollViewport(T, g, L.bodyBottom, L.bodyTop);
+      // the message box (read-only here: sending goes through Claude)
+      inputBar = new T.Group();
+      const box = ctx.ui.panel(L.w - 32 * P, L.inputH, { color: DC.input, radius: 8 * P });
+      box.position.set(0, L.bottom + L.inputGap + L.inputH / 2, Z.content);
+      box.raycast = () => {};
+      const plus = disc(24 * P, L.x0 + 16 * P + 28 * P, box.position.y);
+      plus.mat.map = null;
+      plus.mat.color.set(DC.muted);
+      plus.m.position.z = Z.over;
+      const plusIcon = makeIcon(ctx, 'plus', { size: 16 * P, color: DC.input });
+      plusIcon.position.set(plus.m.position.x, box.position.y, Z.text);
+      plusIcon.raycast = () => {};
+      inputText = makeText(ctx, '', { size: 16 * P, anchorX: 'left', anchorY: 'middle', color: DC.faint, whiteSpace: 'nowrap' });
+      inputText.position.set(L.x0 + 60 * P, box.position.y, Z.text);
+      inputBar.add(box, plus.m, plusIcon, inputText);
+      g.add(inputBar);
+
+      // message slots
+      chatView = new ScrollViewport(T, g, L.inputTop, L.headerBottom);
       const watched: THREE.Object3D[] = [];
-      slotMsg.length = 0;
       for (let i = 0; i < SLOTS; i++) {
         const sg = new T.Group();
-        const head = makeText(ctx, '', { size: L.s * 0.9, anchorX: 'left', anchorY: 'top', color: theme.textDim, whiteSpace: 'nowrap', weight: 'semibold' });
-        const body = makeText(ctx, '', { size: L.s, anchorX: 'left', anchorY: 'top', color: theme.text, maxWidth: L.textW, lineHeight: 1.25 });
-        head.position.set(L.x0, 0, STYLE.zText);
-        body.position.set(L.x0, 0, STYLE.zText);
-        sg.add(head, body);
+        const av = disc(40 * P, L.x0 + 36 * P, 0);
+        const name = makeText(ctx, '', { size: 16 * P, anchorX: 'left', anchorY: 'middle', color: DC.head, weight: 'semibold', whiteSpace: 'nowrap' });
+        name.position.set(L.textX, 0, Z.text);
+        const time = makeText(ctx, '', { size: 12 * P, anchorX: 'left', anchorY: 'middle', color: DC.muted, whiteSpace: 'nowrap' });
+        time.position.set(L.textX, 0, Z.text);
+        const body = makeText(ctx, '', { size: 16 * P, anchorX: 'left', anchorY: 'top', color: DC.text, maxWidth: L.textW, lineHeight: 1.375 });
+        body.position.set(L.textX, 0, Z.text);
+        // reply preview: a spine from the avatar up to the quoted author's mini avatar + name + text
+        const reply = new T.Group();
+        const spine = plane(DC.spine, 2 * P, 10 * P, L.x0 + 36 * P, -5 * P, Z.content);
+        const spine2 = plane(DC.spine, 32 * P, 2 * P, L.x0 + 52 * P, 0, Z.content);
+        const mini = disc(16 * P, L.textX + 8 * P, 0);
+        const replyText = makeText(ctx, '', { size: 14 * P, anchorX: 'left', anchorY: 'middle', color: DC.muted, whiteSpace: 'nowrap' });
+        replyText.position.set(L.textX + 20 * P, 0, Z.text);
+        reply.add(spine, spine2, mini.m, replyText);
+        const imgMat = new T.MeshBasicMaterial({ color: 0xffffff, map: placeholderTex() });
+        const img = new T.Mesh(sharedGeometry(T, 'plane'), imgMat);
+        img.raycast = () => {};
+        sg.add(av.m, name, time, body, reply, img);
         sg.visible = false;
         g.add(sg);
-        slots.push({ g: sg, head, body });
-        slotMsg.push(-1);
         chatView.add(sg);
-        watched.push(body);
+        slots.push({ g: sg, avatar: av.m, avatarMat: av.mat, name, time, body, reply, spine, spine2, mini: mini.m, miniMat: mini.mat, replyText, img, imgMat, msg: '', ready: false, waitInfo: null, waitFrames: 0 });
+        watched.push(body, name);
       }
       watch.reset(watched);
 
-      // One row more than fits: while scrolling, the top and bottom rows are both partly visible.
+      // picker rows (one more than fits: while scrolling, the top and bottom rows are both partly visible)
+      pickViewport = new ScrollViewport(T, g, L.bottom + 8 * P, L.headerBottom);
       for (let r = 0; r <= L.pickN; r++) {
         const rg = new T.Group();
-        rg.position.set(0, L.bodyTop - (r + 0.5) * L.rowH, 0);
-        const icon = makeIcon(ctx, 'hash', { size: L.s * 1.2, color: resolveColor(theme, 'textDim') });
+        const pill = ctx.ui.panel(4 * P, 8 * P, { color: DC.head, radius: 2 * P });
+        pill.position.set(L.x0 + 2 * P, 0, Z.content);
+        pill.raycast = () => {};
+        const d = disc(32 * P, L.x0 + 28 * P, 0);
+        const ini = makeText(ctx, '', { size: 12 * P, anchorX: 'center', anchorY: 'middle', color: DC.head, whiteSpace: 'nowrap' });
+        ini.position.set(L.x0 + 28 * P, 0, Z.text);
+        const icon = makeIcon(ctx, 'hash', { size: 20 * P, color: DC.channel });
         icon.raycast = () => {};
-        icon.position.set(L.x0 + L.s * 0.7, 0, STYLE.zText);
-        const label = makeText(ctx, '', { size: L.s * 1.05, anchorX: 'left', anchorY: 'middle', color: theme.text, whiteSpace: 'nowrap' });
-        label.position.set(L.x0 + L.s * 2, L.s * 0.1, STYLE.zText);
-        const meta = makeText(ctx, '', { size: L.s * 0.8, anchorX: 'right', anchorY: 'middle', color: theme.textDim, whiteSpace: 'nowrap' });
-        meta.position.set(L.x1, L.s * 0.1, STYLE.zText);
-        const plate = ctx.ui.panel(L.w - 2 * PAD, L.rowH - L.s * 0.35, { color: theme.surface, opacity: 0.55 });
-        plate.position.z = STYLE.zContent;
-        plate.raycast = () => {};
+        icon.position.set(L.x0 + 28 * P, 0, Z.text);
+        const label = makeText(ctx, '', { size: 16 * P, anchorX: 'left', anchorY: 'middle', color: DC.channel, whiteSpace: 'nowrap' });
+        label.position.set(L.x0 + 52 * P, 0, Z.text);
+        const header = makeText(ctx, '', { size: 12 * P, anchorX: 'left', anchorY: 'middle', color: DC.muted, whiteSpace: 'nowrap', weight: 'semibold' });
+        header.position.set(L.x0 + 16 * P, -4 * P, Z.text);
+        const badge = ctx.ui.panel(22 * P, 16 * P, { color: DC.red, radius: 8 * P });
+        badge.position.set(L.w / 2 - 30 * P, 0, Z.content);
+        badge.raycast = () => {};
+        const badgeText = makeText(ctx, '', { size: 12 * P, anchorX: 'center', anchorY: 'middle', color: '#ffffff', weight: 'semibold', whiteSpace: 'nowrap' });
+        badgeText.position.z = Z.text - Z.content;
+        badge.add(badgeText);
         const hit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
-        hit.scale.set(L.w - 2 * PAD, L.rowH, 0.01);
+        hit.scale.set(L.w - 16 * P, L.rowH, 0.01);
         hit.name = `pick:${r}`;
         ctx.interactive(hit);
-        rg.add(plate, icon, label, meta, hit);
+        rg.add(pill, d.m, ini, icon, label, header, badge, hit);
         rg.visible = false;
         g.add(rg);
         pickViewport.add(rg);
-        pickRows.push({ g: rg, icon, label, meta });
+        pickRows.push({ g: rg, icon, disc: d.m, discMat: d.mat, initials: ini, label, header, pill, badge, badgeText });
       }
 
-      track = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.border));
-      track.scale.set(L.s * 0.16, L.bodyH, 1);
-      track.position.set(L.w / 2 - PAD * 0.55, (L.bodyTop + L.bodyBottom) / 2, STYLE.zContent);
-      thumb = new T.Mesh(sharedGeometry(T, 'plane'), ownMaterial(T, theme.textDim));
-      thumb.position.set(track.position.x, 0, STYLE.zOverlay);
-      for (const m of [track, thumb]) { m.raycast = () => {}; g.add(m); }
+      track = plane(DC.side, 8 * P, L.headerBottom - L.inputTop - 8 * P, L.w / 2 - 8 * P, (L.headerBottom + L.inputTop) / 2, Z.content);
+      thumb = plane(DC.thumb, 8 * P, 1, L.w / 2 - 8 * P, 0, Z.over);
+      g.add(track, thumb);
 
       ctx.root.add(g);
+      chatScroll = new SmoothScroll({ unit: 44 * P });
       relayout();
       dirty = true;
     }
 
     // ---- chat layout (heights estimated, then replaced by troika's measurements)
-    function chars(): number {
-      return Math.max(10, Math.floor(L.textW / (L.s * 0.5))) * Math.max(2, ctx.props.lines - 2);
-    }
-
-    /** (Re)build `laid` from the chat data, keeping measured heights of unchanged messages. */
     function relayout(): void {
       const msgs = chat?.messages ?? [];
       const known = new Map(laid.map((x) => [x.id, x]));
-      const max = chars();
+      const maxChars = Math.max(10, Math.floor(L.textW / (L.s * 0.5))) * Math.max(2, ctx.props.lines - 2);
       laid = msgs.map((m, i) => {
         const prev = msgs[i - 1];
-        const head = !prev || prev.author.id !== m.author.id || m.ts - prev.ts > GROUP_MS;
-        const body = messageBody(m, max);
+        const head = !prev || prev.author.id !== m.author.id || m.ts - prev.ts > GROUP_MS || !!m.reply;
+        const b = messageBody(m, maxChars, I);
+        const im = m.attachments?.find((a) => a.image)?.image;
+        const image = im ? fitImage(im) : null;
         const old = known.get(m.id);
-        if (old && old.body === body && old.head === head) return old;
-        const bh = estimateTextBlock(body, L.s, L.textW, 'sans', 1.25).height;
-        return { id: m.id, body, head, h: blockH(head, bh), measured: false };
+        if (old && old.body === b.text && old.head === head && old.image?.src === image?.src) return old;
+        const bh = b.text ? estimateTextBlock(b.text, L.s, L.textW, 'sans', 1.375).height : 0;
+        return { id: m.id, body: b.text, ranges: b.ranges, head, reply: !!m.reply, image, h: blockH(head, !!m.reply, bh, image) };
       });
       sumOffsets();
     }
 
-    function blockH(head: boolean, bodyH: number): number {
-      return (head ? L.s * 1.35 : 0) + bodyH + (head ? L.s * 0.55 : L.s * 0.2);
+    /** An image attachment's on-card size: at most 400 × 300 Discord px and the text column's width. */
+    function fitImage(im: { src: string; w: number; h: number }) {
+      const { P } = L;
+      const w = Math.max(1, im.w) * P, h = Math.max(1, im.h) * P;
+      const k = Math.min(1, Math.min(L.textW, 400 * P) / w, (300 * P) / h);
+      return { src: im.src, w: w * k, h: h * k };
+    }
+
+    /** Block height: group padding + reply line + name line + body + image + bottom padding (Discord cozy). */
+    function blockH(head: boolean, reply: boolean, bodyH: number, image: { h: number } | null): number {
+      const { P } = L;
+      let h = (head ? 17 : 2) * P + (reply ? 22 * P : 0) + (head ? 22 * P : 0) + bodyH + (image ? image.h + (bodyH ? 6 * P : 2 * P) : 0) + 2 * P;
+      if (head) h = Math.max(h, 17 * P + (reply ? 22 * P : 0) + 42 * P);
+      return h;
     }
 
     function sumOffsets(): void {
@@ -339,6 +469,7 @@ const definition: WidgetDefinition<Props> = {
       chat = null;
       laid = [];
       sumOffsets();
+      for (const s of slots) { s.msg = ''; s.g.visible = false; }
       chatScroll.scrollTo(0, false);
       dirty = true;
       if (!name) return;
@@ -393,13 +524,23 @@ const definition: WidgetDefinition<Props> = {
       return '';
     }
 
+    function header(icon: string, title: string, sub: string): void {
+      setIcon(T, kindIconMesh!, icon);
+      const t = truncate(title, 40);
+      titleText!.set(t);
+      const tw = textSize(titleText!, { text: t, size: 16 * L.P }).width;
+      subText!.position.x = titleText!.position.x + tw + 10 * L.P;
+      subText!.set(truncate(sub, 48));
+    }
+
     function render(): void {
       if (!group) return;
-      dotMat!.color.set(status?.state === 'ready' ? theme.positive : status?.state === 'error' ? theme.negative : theme.textDim);
+      dotMat!.color.set(status?.state === 'ready' ? DC.green : status?.state === 'error' ? DC.red : DC.faint);
       const id = channelId();
       backBtn!.visible = !!id || pickView !== '';
       // The message-area drag target sits in front of the picker rows: only the chat view may have it.
       bodyHit!.visible = !!id;
+      inputBar!.visible = !!id;
       if (id) renderChat();
       else renderPicker();
       chatView!.update();
@@ -408,108 +549,209 @@ const definition: WidgetDefinition<Props> = {
 
     function renderChat(): void {
       for (const r of pickRows) r.g.visible = false;
+      const { P } = L;
       const c = chat;
       const entry = dms.find((e) => e.id === channelId()) ?? guilds.flatMap((x) => x.channels).find((e) => e.id === channelId());
       const kind = c?.kind || entry?.kind || 'text';
-      setIcon(T, kindIconMesh!, kindIcon(kind));
-      titleText!.set(truncate(ctx.props.title || c?.name || entry?.name || channelId(), 40));
-      const sub = c?.guild ?? guilds.find((x) => x.channels.some((e) => e.id === channelId()))?.name ?? (kind === 'dm' ? 'Direct message' : kind === 'group' ? 'Group DM' : '');
+      const name = ctx.props.title || cleanName(c?.name || entry?.name || channelId());
+      const guild = cleanName(c?.guild ?? guilds.find((x) => x.channels.some((e) => e.id === channelId()))?.name ?? '');
+      inputText!.set(truncate(`Message ${kind === 'dm' || kind === 'group' ? '@' : '#'}${name}`, 50));
 
       const msgs = c?.messages ?? [];
-      const note = statusLine() || c?.error || (c?.loading && !msgs.length ? 'Loading messages…' : !c ? 'Loading messages…' : !msgs.length ? 'No messages yet' : '');
+      const note = statusLine() || c?.error || (!c || (c.loading && !msgs.length) ? 'Loading messages…' : !msgs.length ? 'No messages yet' : '');
       emptyText!.set(msgs.length ? '' : note);
       emptyText!.visible = !msgs.length;
 
-      // Content bottom (newest message) sits just above the card's bottom padding when pos = 0.
-      const base = L.bodyBottom + L.s * 0.2;
-      const viewH = L.bodyTop - base;
+      // Content bottom (newest message) sits just above the message box when pos = 0.
+      const base = L.inputTop + 8 * P;
+      const viewH = L.headerBottom - base;
       chatScroll.setMax(total - viewH);
       const pos = chatScroll.pos;
-      let used = 0, below = 0, remeasured = false;
-      for (let i = laid.length - 1; i >= 0 && used < SLOTS; i--) {
-        const x = laid[i], off = offsets[i] - pos;
-        if (off > viewH) break; // this one and older are above the view
-        if (off + x.h < 0) { below++; continue; } // newer messages scrolled out at the bottom
-        const m = msgs[i], slot = slots[used];
-        const sameAsBefore = slotMsg[used] === i;
-        slot.body.set(x.body);
-        (slot.body as unknown as { fillOpacity?: number }).fillOpacity = m.pending ? 0.55 : 1;
-        // Troika's real height replaces the estimate once this slot has been showing this message.
-        if (sameAsBefore) {
-          const sz = textSize(slot.body, { text: x.body, size: L.s, maxWidth: L.textW, lineHeight: 1.25 });
-          const h = blockH(x.head, sz.height);
-          if (sz.measured && Math.abs(h - x.h) > 1e-4) { x.h = h; x.measured = true; remeasured = true; }
-        }
-        slotMsg[used] = i;
-        slot.g.visible = true;
-        slot.head.visible = x.head;
-        const hh = x.head ? L.s * 1.35 : 0;
-        if (x.head) {
-          const name = m.author.name;
-          slot.head.set(`${name}  ${clock(m.ts)}${m.pending ? '  sending…' : ''}`);
-          setColorRanges(slot.head, { 0: hexToInt(authorColor(m)), [name.length]: dimInt });
-        }
-        const gap = x.head ? L.s * 0.55 : L.s * 0.2;
-        const top = base + off + x.h - gap * 0.5;
-        slot.head.position.y = top;
-        slot.body.position.y = top - hh;
-        used++;
+
+      // 1. which messages are in view (newest first)
+      const inView = new Set<string>();
+      const vis: number[] = [];
+      for (let i = laid.length - 1; i >= 0 && vis.length < SLOTS; i--) {
+        const off = offsets[i] - pos;
+        if (off > viewH) break;
+        if (off + laid[i].h < 0) continue;
+        vis.push(i);
+        inView.add(laid[i].id);
       }
-      for (let k = used; k < SLOTS; k++) { slots[k].g.visible = false; slotMsg[k] = -1; }
-      if (remeasured) { sumOffsets(); dirty = true; } // lay out again with the real heights next frame
-      subText!.set(truncate([sub, below > 0 ? `${below} newer below` : ''].filter(Boolean).join(' · '), 60));
+      // 2. slots keep their message while it stays in view; free the others
+      const bySlot = new Map<string, Slot>();
+      for (const s of slots) {
+        if (s.msg && inView.has(s.msg)) bySlot.set(s.msg, s);
+        else if (s.msg) { s.msg = ''; s.g.visible = false; }
+      }
+      // 3. lay out; new messages take a free slot (hidden until troika has laid out its text)
+      let remeasured = false;
+      for (const i of vis) {
+        const x = laid[i], m = msgs[i];
+        let s = bySlot.get(x.id);
+        if (!s) {
+          s = slots.find((k) => !k.msg);
+          if (!s) break;
+          fill(s, x, m);
+        } else if (textOf(s.body) !== x.body) fill(s, x, m); // edited, or a pending message confirmed
+        setMap(s.avatarMat, m.author.avatar);
+        if (x.reply) setMap(s.miniMat, m.reply?.avatar);
+        if (x.image) setMap(s.imgMat, x.image.src);
+        if (!s.ready) {
+          s.waitFrames++;
+          const info = (s.body as unknown as { textRenderInfo?: unknown }).textRenderInfo;
+          if (info !== s.waitInfo || s.waitFrames > 6) s.ready = true;
+          else { dirty = true; continue; } // laid out next frame
+        }
+        // the real body height replaces the estimate (compensating the scroll when it is below the view)
+        if (x.body) {
+          const sz = textSize(s.body, { text: x.body, size: L.s, maxWidth: L.textW, lineHeight: 1.375 });
+          if (sz.measured) {
+            const h = blockH(x.head, x.reply, sz.height, x.image);
+            if (Math.abs(h - x.h) > 1e-4) {
+              if (offsets[i] < pos) chatScroll.shift(h - x.h);
+              x.h = h;
+              remeasured = true;
+            }
+          }
+        }
+        place(s, x, base + offsets[i] - pos);
+        s.g.visible = true;
+      }
+      if (remeasured) { sumOffsets(); dirty = true; }
+
+      const below = vis.length ? laid.length - 1 - vis[0] : 0;
+      header(kindIcon(kind), name, below > 0 ? `${guild ? `${guild} · ` : ''}${below} newer below` : guild);
       const over = total > viewH;
       track!.visible = thumb!.visible = over;
       if (over) {
-        const th = Math.max(L.s * 1.5, L.bodyH * (viewH / total));
-        const u = chatScroll.max > 0 ? pos / chatScroll.max : 0;
-        thumb!.scale.set(L.s * 0.16, th, 1);
-        thumb!.position.y = L.bodyBottom + th / 2 + u * (L.bodyH - th);
+        const trackH = L.headerBottom - L.inputTop - 8 * P;
+        const th = Math.max(24 * P, trackH * (viewH / total));
+        const u = chatScroll.max > 0 ? chatScroll.pos / chatScroll.max : 0;
+        thumb!.scale.y = th;
+        thumb!.position.y = L.inputTop + 4 * P + th / 2 + u * (trackH - th);
+      }
+    }
+
+    /** Put message `x` into slot `s` (texts, colors): done once per message per slot. */
+    function fill(s: Slot, x: Laid, m: Msg): void {
+      s.msg = x.id;
+      s.waitInfo = (s.body as unknown as { textRenderInfo?: unknown }).textRenderInfo;
+      s.waitFrames = 0;
+      s.ready = textOf(s.body) === x.body; // same text: nothing to lay out
+      s.body.set(x.body);
+      setColorRanges(s.body, x.ranges);
+      (s.body as unknown as { fillOpacity?: number }).fillOpacity = m.pending ? 0.5 : 1;
+      s.avatar.visible = x.head;
+      s.name.visible = s.time.visible = x.head;
+      if (x.head) {
+        s.name.set(cleanName(m.author.name));
+        s.time.set(m.pending ? 'Sending…' : discordTime(m.ts));
+      }
+      s.reply.visible = x.reply;
+      if (x.reply) {
+        const who = `@${cleanName(m.reply?.author ?? 'unknown')}`;
+        s.replyText.set(`${who} ${truncate((m.reply?.content ?? '').replace(/\s+/g, ' '), 70)}`);
+        setColorRanges(s.replyText, { 0: I.head, [who.length]: I.muted });
+      }
+      s.img.visible = !!x.image;
+      if (x.image) s.img.scale.set(x.image.w, x.image.h, 1);
+    }
+
+    /** Position slot `s` with its message's bottom at `bottom` (card coordinates). */
+    function place(s: Slot, x: Laid, bottom: number): void {
+      const { P } = L;
+      s.g.position.y = bottom + x.h;
+      let y = -(x.head ? 17 : 2) * P;
+      if (x.reply) {
+        const ry = y - 11 * P;
+        s.mini.position.y = ry;
+        s.replyText.position.y = ry;
+        s.spine2.position.y = ry;
+        s.spine.position.y = ry - 6 * P;
+        y -= 22 * P;
+      }
+      if (x.head) {
+        const ny = y - 11 * P;
+        s.name.position.y = ny;
+        s.avatar.position.y = y - 20 * P;
+        const nw = textSize(s.name, { text: textOf(s.name), size: 16 * P }).width;
+        s.time.position.set(L.textX + nw + 8 * P, ny - 1 * P, Z.text);
+        y -= 22 * P;
+      }
+      s.body.position.y = y;
+      if (x.image) {
+        const bh = x.body ? textSize(s.body, { text: x.body, size: L.s, maxWidth: L.textW, lineHeight: 1.375 }).height : 0;
+        const iy = y - bh - (x.body ? 6 * P : 2 * P);
+        s.img.position.set(L.textX + x.image.w / 2, iy - x.image.h / 2, Z.content);
       }
     }
 
     function pickList(): PickRow[] {
-      if (pickView === 'dms') return dms.map((e) => ({ key: e.id, label: e.name, meta: e.kind === 'group' ? 'group' : '', icon: kindIcon(e.kind) }));
+      const row = (e: Entry, icon: string, image?: string): PickRow => ({ key: e.id, label: cleanName(e.name), icon, image, unread: !!e.unread && !e.muted, mentions: e.mentions ?? 0, muted: !!e.muted });
+      if (pickView === 'dms') return dms.map((e) => row(e, kindIcon(e.kind), e.icon ?? (e.kind === 'dm' ? '' : undefined)));
       if (pickView) {
         const gd = guilds.find((x) => x.id === pickView);
-        return (gd?.channels ?? []).map((e) => ({ key: e.id, label: e.name, meta: e.category ?? '', icon: kindIcon(e.kind) }));
+        const out: PickRow[] = [];
+        let cat: string | undefined = '\0';
+        for (const e of gd?.channels ?? []) {
+          if (e.category !== cat) {
+            cat = e.category;
+            if (cat) out.push({ key: '', label: cleanName(cat).toUpperCase(), icon: '', unread: false, mentions: 0, muted: false, header: true });
+          }
+          out.push(row(e, kindIcon(e.kind)));
+        }
+        return out;
       }
       const rows: PickRow[] = [];
-      if (dms.length) rows.push({ key: 'view:dms', label: 'Direct messages', meta: `${dms.length}`, icon: 'at-sign' });
-      for (const gd of guilds) rows.push({ key: `view:${gd.id}`, label: gd.name, meta: `${gd.channels.length}`, icon: 'users' });
+      if (dms.length) {
+        const unread = dms.some((e) => e.unread && !e.muted);
+        const mentions = dms.reduce((n, e) => n + (e.mentions ?? 0), 0);
+        rows.push({ key: 'view:dms', label: 'Direct Messages', icon: 'message-square', unread, mentions, muted: false });
+      }
+      for (const gd of guilds) rows.push({ key: `view:${gd.id}`, label: cleanName(gd.name), icon: '', image: gd.icon ?? '', unread: !!gd.unread, mentions: gd.mentions ?? 0, muted: !!gd.muted });
       return rows;
     }
 
     function renderPicker(): void {
       for (const s of slots) s.g.visible = false;
-      setIcon(T, kindIconMesh!, pickView === 'dms' ? 'at-sign' : pickView ? 'users' : 'message-square');
+      track!.visible = thumb!.visible = false;
+      const { P } = L;
       const gd = pickView && pickView !== 'dms' ? guilds.find((x) => x.id === pickView) : undefined;
-      titleText!.set(ctx.props.title || (pickView === 'dms' ? 'Direct messages' : gd ? truncate(gd.name, 40) : 'Discord'));
-      subText!.set(status?.state === 'ready' && status.user?.name ? `Signed in as ${status.user.name}` : '');
+      header(pickView === 'dms' ? 'at-sign' : pickView ? 'users' : 'message-square',
+        ctx.props.title || (pickView === 'dms' ? 'Direct Messages' : gd ? cleanName(gd.name) : 'Discord'), '');
       if (pickStale) { pickItems = pickList(); pickStale = false; }
       const note = statusLine() || (pickItems.length ? '' : 'Nothing here');
       emptyText!.set(pickItems.length ? '' : note);
       emptyText!.visible = !pickItems.length;
-      pickScroll.setMax(pickItems.length - L.pickN);
+      const areaTop = L.headerBottom - 8 * P;
+      pickScroll.setMax(pickItems.length - (areaTop - L.bottom - 8 * P) / L.rowH);
       const first = Math.floor(pickScroll.pos);
       const frac = pickScroll.pos - first;
-      const chars = Math.max(8, Math.floor((L.textW - L.s * 7) / (L.s * 1.05 * 0.52)));
+      const chars = Math.max(8, Math.floor((L.w - 110 * P) / (16 * P * 0.5)));
       for (let r = 0; r <= L.pickN; r++) {
         const p = pickRows[r], it = pickItems[first + r];
-        p.g.position.y = L.bodyTop - (r + 0.5 - frac) * L.rowH;
-        p.g.visible = !!it && (r < L.pickN || frac > 1e-4);
+        p.g.position.y = areaTop - (r + 0.5 - frac) * L.rowH;
+        p.g.visible = !!it;
         if (!it) continue;
-        setIcon(T, p.icon, it.icon);
+        p.header.visible = !!it.header;
+        p.label.visible = !it.header;
+        p.header.set(it.header ? truncate(it.label, chars) : '');
+        if (it.header) { p.disc.visible = p.icon.visible = p.initials.visible = p.pill.visible = p.badge.visible = false; continue; }
+        // icon: server / DM picture (initials on blurple until it loads, or without one), else a glyph
+        const isPicture = it.image !== undefined;
+        p.disc.visible = isPicture;
+        p.initials.visible = isPicture && !tex(it.image);
+        p.icon.visible = !isPicture;
+        if (isPicture) {
+          setMap(p.discMat, it.image || undefined);
+          p.initials.set(initials(it.label));
+        } else setIcon(T, p.icon, it.icon);
         p.label.set(truncate(it.label, chars));
-        p.meta.set(truncate(it.meta, 18));
-      }
-      const over = pickItems.length > L.pickN;
-      track!.visible = thumb!.visible = over;
-      if (over) {
-        const th = Math.max(L.s * 1.5, (L.bodyH * L.pickN) / pickItems.length);
-        const u = pickScroll.pos / (pickItems.length - L.pickN);
-        thumb!.scale.set(L.s * 0.16, th, 1);
-        thumb!.position.y = L.bodyTop - th / 2 - u * (L.bodyH - th);
+        (p.label as unknown as { color: unknown }).color = it.unread || it.mentions ? DC.head : it.muted ? DC.faint : DC.channel;
+        p.pill.visible = it.unread;
+        p.badge.visible = it.mentions > 0;
+        if (it.mentions > 0) p.badgeText.set(it.mentions > 99 ? '99+' : String(it.mentions));
       }
     }
 
@@ -537,7 +779,7 @@ const definition: WidgetDefinition<Props> = {
       }
       if (part.startsWith('pick:')) {
         const it = pickItems[Math.floor(pickScroll.pos) + Number(part.slice(5))];
-        if (!it) return;
+        if (!it || it.header) return;
         if (it.key.startsWith('view:')) { pickView = it.key.slice(5); pickStale = true; pickScroll.scrollTo(0, false); dirty = true; }
         else open(it.key);
       }
@@ -597,7 +839,7 @@ const definition: WidgetDefinition<Props> = {
           lease += dt;
           if (lease > LEASE_S) requestOpen();
         }
-        if (watch.changed()) dirty = true; // real glyph heights arrived: lay out again
+        if (watch.changed()) dirty = true; // real glyph sizes arrived: lay out again
         if (chatScroll.step(dt)) dirty = true;
         if (pickScroll.step(dt)) dirty = true;
         if (!dirty) { chatView?.update(); pickViewport?.update(); return; } // clip planes follow the card while it moves
@@ -608,6 +850,9 @@ const definition: WidgetDefinition<Props> = {
         offChat?.();
         for (const off of subs.splice(0)) off();
         if (group) disposeTree(group);
+        for (const t of textures.values()) t.dispose();
+        textures.clear();
+        placeholder?.dispose();
       },
     };
   },
