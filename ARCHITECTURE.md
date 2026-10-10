@@ -163,7 +163,9 @@ One registry name space. The client tries `runtime.runLocalCommand` first
 (e.g. `voice.ptt`, `select`, `agent.panel.toggle {visible?}`, `grid.toggle {visible?}`, `session.mode`,
 `origin.recalibrate`); unknown names go to the server as `{type:'command'}`.
 Server commands (apps/server/src/commands.ts) include `undo`, `redo`,
-`delete` {entity}, `duplicate` {entity}, `workspace.save` {name?},
+`delete` {entity}, `duplicate` {entity}, `spawn` {widget, name?, props?} (in front of the user; a
+spoken name like "line plot" resolves to `line-plot`; an unknown name declines, which hands a voice
+utterance to Claude), `workspace.save` {name?},
 `screenshot` (logs a screenshot for the agent), `broadcast` {name, args}
 (forwards a command to all xr clients), `agent.ask` {text}, `channel.publish` {channel, value},
 `ping` (liveness probe; over WebSocket the sender gets `{type:'command', name:'pong'}`, which the

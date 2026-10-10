@@ -282,6 +282,8 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     restartSource: (id) => sources.restart(id),
     rebuildWidget: (id) => widgets.build(id),
     publish: (channel, value, o) => ({ seq: bus.publish(channel, value, o).seq }),
+    widgets: () => widgets.list(),
+    head: () => user.latest?.head ?? null,
   });
 
   // ---------------------------------------------------------------- load library + scene

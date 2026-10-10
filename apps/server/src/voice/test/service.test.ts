@@ -57,13 +57,14 @@ interface Recorder {
   asks: Array<{ text: string; context: Record<string, unknown> }>;
 }
 
-function makeDeps(voiceDir: string, opts: { failCommand?: string } = {}): Recorder {
+function makeDeps(voiceDir: string, opts: { failCommand?: string; declineCommand?: string } = {}): Recorder {
   const r: Omit<Recorder, 'deps'> = { said: [], sent: [], broadcasts: [], events: [], statuses: [], commands: [], asks: [] };
   const deps: VoiceDeps = {
     voiceDir,
     runCommand: async (name, args, origin) => {
       r.commands.push({ name, args, clientId: origin.clientId });
       if (name === opts.failCommand) throw new Error(`entity 'zzz' does not exist`);
+      if (name === opts.declineCommand) throw Object.assign(new Error(`no widget named 'zzz'`), { passToAgent: true });
       return { ok: true };
     },
     agentAsk: (text, context) => { r.asks.push({ text, context }); },
@@ -84,6 +85,7 @@ const COMMANDS: VoiceCommand[] = [
   { id: 'undo', patterns: ['undo( that)?'], command: 'undo' },
   { id: 'delete-target', patterns: ['(delete|remove) (this|that|it)'], command: 'delete', args: { entity: '$target' } },
   { id: 'mode-ar', patterns: ['switch to (ar|passthrough|pass through)'], command: 'broadcast', args: { name: 'session.mode', args: { mode: 'ar' } } },
+  { id: 'spawn-widget', patterns: ['(spawn|add) (?<widget>[a-z0-9 ]+)'], command: 'spawn', args: { widget: '$widget' } },
   { id: 'set-layer', patterns: ['set layer (?<n>[a-z0-9 ]+)'], command: 'channel.set', args: { channel: 'interp.ctl.layer', value: '$n:number' } },
 ];
 
@@ -211,6 +213,19 @@ describe('VoiceService (fake STT)', () => {
     await until(() => results(rec).length === 1);
     expect(rec.said.some((s) => s.kind === 'error' && /does not exist/.test(s.text))).toBe(true);
     expect(rec.events.find((e) => e.type === 'voice.utterance')!.data.error).toMatch(/does not exist/);
+  });
+
+  it('a command that declines hands the utterance to Claude instead of failing', async () => {
+    await voice.close();
+    rec = makeDeps(dir, { declineCommand: 'spawn' });
+    voice = createVoice(rec.deps, { sttUrl: stt.url, watch: false });
+    stt.text = 'Add a weather widget for Cozumel';
+    speak(voice, 'c1', 'u1', 600, POINTING);
+    await until(() => results(rec).length === 1);
+    expect(rec.commands.map((c) => c.name)).toEqual(['spawn']);
+    expect(results(rec)[0]).toMatchObject({ route: 'agent' });
+    expect(rec.asks.map((a) => a.text)).toEqual(['Add a weather widget for Cozumel']);
+    expect(rec.said.some((s) => s.kind === 'error')).toBe(false);
   });
 
   it('no-op command (never mind) routes fastpath without running anything', async () => {
