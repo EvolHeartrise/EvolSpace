@@ -339,6 +339,8 @@ const definition: WidgetDefinition<Props> = {
       dotMat!.color.set(status?.state === 'ready' ? theme.positive : status?.state === 'error' ? theme.negative : theme.textDim);
       const id = channelId();
       backBtn!.visible = !!id || pickView !== '';
+      // The message-area drag target sits in front of the picker rows: only the chat view may have it.
+      bodyHit!.visible = !!id;
       if (id) renderChat();
       else renderPicker();
     }
