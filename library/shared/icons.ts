@@ -23,10 +23,22 @@ export function hasIcon(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(LUCIDE_ICONS, name);
 }
 
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+/** Polylines [x0, y0, x1, y1, …] (24×24 box, y down) of a generated icon string (see gen-lucide.mjs). */
+export function decodeIcon(code: string): number[][] {
+  return code.split(' ').filter(Boolean).map((pl) => {
+    const out: number[] = [];
+    for (let i = 0; i + 1 < pl.length; i += 2) out.push(((B64.indexOf(pl[i]) << 6) | B64.indexOf(pl[i + 1])) / 64 - 4);
+    return out;
+  });
+}
+
 /** Positions of the stroked icon (non-indexed triangles), unit box centered at 0, y up. */
 export function iconTriangles(name: string): Float32Array {
-  const lines = LUCIDE_ICONS[name];
-  if (!lines) throw new Error(`no icon "${name}" (add it: node scripts/gen-lucide.mjs ${name})`);
+  const code = LUCIDE_ICONS[name];
+  if (code === undefined) throw new Error(`no icon "${name}" (add it: node scripts/gen-lucide.mjs ${name})`);
+  const lines = decodeIcon(code);
   const out: number[] = [];
   const P = (x: number, y: number): [number, number] => [(x - 12) / 24, (12 - y) / 24];
   const disc = (cx: number, cy: number) => {
