@@ -1,9 +1,15 @@
 {
-  "description": "Discord, signed in as the user (user token DISCORD_USER_TOKEN in secrets.env; note: Discord's ToS forbids automating user accounts): gateway + REST client for the discord widget. Publishes discord.status, discord.channels (DMs + servers → channels) and discord.ch.<channelId> (recent messages, live) for channels a widget opened; follows discord.request = {cmd:'open', channel} | {cmd:'send', channel, content, nonce?} (reply on discord.sent) | {cmd:'refresh'}.",
+  "description": "Discord, signed in as the user (user token DISCORD_USER_TOKEN in secrets.env; note: Discord's ToS forbids automating user accounts): gateway + REST client for the discord widget. Publishes discord.status, discord.channels (DMs + servers \u2192 viewable channels, with icons, unread and mention counts from Discord's read states) and discord.ch.<channelId> (recent messages with avatars / image thumbnails, live) for channels a widget opened \u2014 a channel shown in a widget is marked read on Discord. Avatars, icons and thumbnails are cached in data/media (served as /media/discord-*). Follows discord.request = {cmd:'open', channel} | {cmd:'send', channel, content, nonce?} (reply on discord.sent) | {cmd:'refresh'}.",
   "command": "node",
-  "args": ["discord.mjs", "--prefix", "discord"],
+  "args": [
+    "discord.mjs",
+    "--prefix",
+    "discord"
+  ],
   "cwd": ".",
-  "secrets": ["DISCORD_USER_TOKEN"],
+  "secrets": [
+    "DISCORD_USER_TOKEN"
+  ],
   "autostart": true,
   "restart": true
 }
