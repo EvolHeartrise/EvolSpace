@@ -1,7 +1,24 @@
 // discord — picker (DMs / servers → channels), live messages with author grouping, scrolling, open lease.
+import * as THREE from 'three';
 import { expect, it } from 'vitest';
 import discord, { messageBody } from '../widgets/discord/widget.ts';
 import { mount } from './harness.ts';
+
+/** Name of the nearest visible hit along a ray from +Z through the named part (like the runtime picker). */
+function nearestHit(root: THREE.Object3D, part: string): string {
+  root.updateMatrixWorld(true);
+  const target = root.getObjectByName(part)!.getWorldPosition(new THREE.Vector3());
+  const rc = new THREE.Raycaster(target.clone().add(new THREE.Vector3(0, 0, 1)), new THREE.Vector3(0, 0, -1));
+  const hits: THREE.Intersection[] = [];
+  const visit = (o: THREE.Object3D) => {
+    if (!o.visible) return;
+    if ((o as THREE.Mesh).geometry) o.raycast(rc, hits);
+    o.children.forEach(visit);
+  };
+  visit(root);
+  hits.sort((a, b) => a.distance - b.distance);
+  return hits.map((x) => x.object.name).find(Boolean) ?? '';
+}
 
 const now = Date.now();
 const channels = {
@@ -21,6 +38,8 @@ it('picks a DM through the picker, subscribes and leases the channel', async () 
   expect(h.hasText('Beat Lab')).toBe(true);
   expect(h.hasText('Signed in as evol')).toBe(true);
 
+  // A ray from the user at the first row reaches the row, not the message-area hit box in front of it.
+  expect(nearestHit(h.root, 'pick:0')).toBe('pick:0');
   h.press('pick:0', 'drag'); // Direct messages
   h.frame();
   expect(h.hasText('alice')).toBe(true);
