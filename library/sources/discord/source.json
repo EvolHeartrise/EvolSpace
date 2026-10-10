@@ -1,0 +1,9 @@
+{
+  "description": "Discord, signed in as the user (user token DISCORD_USER_TOKEN in secrets.env; note: Discord's ToS forbids automating user accounts): gateway + REST client for the discord widget. Publishes discord.status, discord.channels (DMs + servers → channels) and discord.ch.<channelId> (recent messages, live) for channels a widget opened; follows discord.request = {cmd:'open', channel} | {cmd:'send', channel, content, nonce?} (reply on discord.sent) | {cmd:'refresh'}.",
+  "command": "node",
+  "args": ["discord.mjs", "--prefix", "discord"],
+  "cwd": ".",
+  "secrets": ["DISCORD_USER_TOKEN"],
+  "autostart": true,
+  "restart": true
+}
