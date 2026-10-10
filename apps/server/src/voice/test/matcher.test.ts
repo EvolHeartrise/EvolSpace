@@ -205,6 +205,16 @@ describe('library/voice/commands.json: video + github fast paths', () => {
     expect(run('Go back')?.id).toBe('undo');
   });
 
+  it('browser: back / forward / reload / scroll', () => {
+    const b = (t: string) => { const r = run(t); return r?.args?.channel === 'browser.ctl' ? r.args.value : r ? `other:${r.id}` : null; };
+    expect(b('Browser back')).toEqual({ cmd: 'back' });
+    expect(b('Go forward in the browser')).toEqual({ cmd: 'forward' });
+    expect(b('Reload the page')).toEqual({ cmd: 'reload' });
+    expect(b('Scroll down.')).toEqual({ cmd: 'scroll', dy: 700 });
+    expect(b('Scroll the page up a bit')).toEqual({ cmd: 'scroll', dy: -700 });
+    expect(b('Please use browser use to do a Google search for cats')).toBeNull(); // that one is for Claude
+  });
+
   it('github: show issue / PR numbers', () => {
     expect(run('Show me issue number 10.')?.args).toEqual({ channel: 'github.bsrl.ctl.show', value: '10' });
     expect(run('PR 62')?.args).toEqual({ channel: 'github.bsrl.ctl.show', value: '62' });

@@ -290,5 +290,54 @@
     ],
     "command": "channel.publish",
     "args": {"channel": "video.ctl", "value": {"cmd": "restart"}}
+  },
+  {
+    "id": "browser-back",
+    "description": "Agent browser: back.",
+    "patterns": [
+      "(browser|page) back",
+      "go back in the browser"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "browser.ctl", "value": {"cmd": "back"}}
+  },
+  {
+    "id": "browser-forward",
+    "description": "Agent browser: forward.",
+    "patterns": [
+      "(browser|page) forward",
+      "go forward in the browser"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "browser.ctl", "value": {"cmd": "forward"}}
+  },
+  {
+    "id": "browser-reload",
+    "description": "Agent browser: reload.",
+    "patterns": [
+      "(reload|refresh)( the)? (page|browser)"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "browser.ctl", "value": {"cmd": "reload"}}
+  },
+  {
+    "id": "browser-scroll-down",
+    "description": "Agent browser: scroll down.",
+    "patterns": [
+      "scroll( the (page|browser))? down( a bit| more)?",
+      "page down"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "browser.ctl", "value": {"cmd": "scroll", "dy": 700}}
+  },
+  {
+    "id": "browser-scroll-up",
+    "description": "Agent browser: scroll up.",
+    "patterns": [
+      "scroll( the (page|browser))? up( a bit| more)?",
+      "page up"
+    ],
+    "command": "channel.publish",
+    "args": {"channel": "browser.ctl", "value": {"cmd": "scroll", "dy": -700}}
   }
 ]
