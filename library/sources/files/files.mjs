@@ -198,10 +198,15 @@ async function ignoredNames(dir) {
 
 /** Name index of everything under a root (cached ~60 s; built breadth-first within a budget). */
 const indexes = new Map();
-async function indexOf(abs, hidden) {
+const building = new Map(); // key → Promise: concurrent searches of one root share a single build
+function indexOf(abs, hidden) {
   const key = `${abs}|${hidden}`;
   const cached = indexes.get(key);
-  if (cached && Date.now() - cached.at < 60000) return cached;
+  if (cached && Date.now() - cached.at < 60000) return Promise.resolve(cached);
+  if (!building.has(key)) building.set(key, buildIndex(abs, hidden, key).finally(() => building.delete(key)));
+  return building.get(key);
+}
+async function buildIndex(abs, hidden, key) {
   const entries = [];
   const until = Date.now() + 8000;
   let partial = false;
