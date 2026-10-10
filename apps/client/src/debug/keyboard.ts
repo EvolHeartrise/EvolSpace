@@ -1,6 +1,6 @@
 // Debug dashboard shortcuts. Never fire while typing (text inputs, textareas,
 // selects, contenteditable) and don't collide with the desktop controls
-// (WASD/QE/Shift move, V push-to-talk, P perf, H page panel):
+// (WASD/QE/Shift move, V push-to-talk, B one-off agent push-to-talk, P perf, H page panel):
 //   ` or F1        toggle the whole dashboard
 //   F              frame the selected entity        Shift+F  frame everything
 //   Delete         remove the selected entity

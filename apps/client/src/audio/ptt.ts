@@ -2,7 +2,9 @@
 // audio to the server as 16 kHz PCM16 AudioFrames (~100 ms each) between
 // voice.begin and voice.end. Deictic context (focus/gaze/selection) is captured
 // at the moment PTT starts so "make *this* bigger" refers to what the user was
-// pointing at when they began speaking.
+// pointing at when they began speaking. 'voice.ptt.oneshot' is the same with
+// voice.begin agent 'oneshot': the server hands the utterance to a fresh one-off
+// agent instead of the main Claude session.
 
 import { encodeAudioFrame, type ClientMessage, type VoiceContext } from '@evolspace/protocol';
 import { Resampler, floatToPcm16, PcmChunker, PreRoll } from './resampler.ts';
@@ -43,6 +45,7 @@ type Phase = 'idle' | 'starting' | 'capturing';
 export class PushToTalk {
   private phase: Phase = 'idle';
   private utteranceId = '';
+  private oneshot = false;
   private startedAt = 0;
   private endRequested = false;
   private resampler: Resampler | null = null;
@@ -77,15 +80,16 @@ export class PushToTalk {
     });
   }
 
-  /** Command handler: 'voice.ptt' with phase start|end. */
-  handle(phase: 'start' | 'end'): void {
-    if (phase === 'start') void this.start();
+  /** Command handler: 'voice.ptt' (or 'voice.ptt.oneshot', `oneshot` true) with phase start|end. */
+  handle(phase: 'start' | 'end', oneshot = false): void {
+    if (phase === 'start') void this.start(oneshot);
     else this.end(false);
   }
 
-  async start(): Promise<void> {
+  async start(oneshot = false): Promise<void> {
     if (this.phase !== 'idle') return;
     this.phase = 'starting';
+    this.oneshot = oneshot;
     this.endRequested = false;
     const context = this.deps.context();
     const ok = await this.warmup();
@@ -113,7 +117,7 @@ export class PushToTalk {
     this.framesSent = 0;
     this.resampler = new Resampler(this.deps.mic.sampleRate, STT_RATE);
     this.chunker = new PcmChunker(FRAME_SAMPLES, (pcm) => this.sendFrame(pcm));
-    this.deps.net.send({ type: 'voice.begin', utteranceId: this.utteranceId, sampleRate: STT_RATE, context });
+    this.deps.net.send({ type: 'voice.begin', utteranceId: this.utteranceId, sampleRate: STT_RATE, context, ...(this.oneshot ? { agent: 'oneshot' as const } : {}) });
     this.phase = 'capturing';
     this.deps.ui('listening');
     const pre = this.preroll.take();

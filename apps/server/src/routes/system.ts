@@ -126,7 +126,7 @@ export function systemRoutes(r: Router, s: Services): void {
     const b = await readJsonObject(req);
     if (typeof b.text !== 'string' || !b.text.trim()) throw new HttpError(400, 'text is required');
     const context = b.context && typeof b.context === 'object' ? (b.context as Record<string, unknown>) : undefined;
-    return s.voice.simulate(b.text, context);
+    return s.voice.simulate(b.text, context, b.agent === 'oneshot' ? { agent: 'oneshot' } : undefined);
   });
 
   // ---------------------------------------------------------------- sources

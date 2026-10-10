@@ -40,6 +40,7 @@ import { mediaRoutes } from './routes/media.ts';
 import { atomicWrite } from './util/fs.ts';
 import { startMirror, type Mirror, type MirrorDeps } from './mirror/index.ts';
 import { createVoice, type VoiceDeps, type VoiceService } from './voice/index.ts';
+import { OneshotAgents } from './oneshot.ts';
 import type { Services } from './services.ts';
 
 export interface AppOverrides {
@@ -221,6 +222,14 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     event('agent.ask', { text, context });
   };
 
+  const oneshot = new OneshotAgents({
+    repoRoot: config.repoRoot,
+    baseUrl,
+    say: (text, kind) => { agent.say(text, kind); },
+    event,
+    log: (level, message) => log.child('oneshot')[level](message),
+  });
+
   const applyOps = (ops: SceneOp[], source: OpSource | string, group?: string) => store.apply(ops, { source, group });
 
   // ---------------------------------------------------------------- voice
@@ -228,6 +237,11 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     voiceDir: paths.voice,
     runCommand: (name, args, origin) => commands.run(name, args, { clientId: origin.clientId, origin: 'voice' }),
     agentAsk,
+    oneshotAsk: (text, context) => {
+      // voice_simulate tests (often the main Claude checking routing) must not spawn agents.
+      if (context.simulated === true) { agent.say(`(simulated) a one-off agent would handle: ${text}`, 'info'); return; }
+      oneshot.ask(text, context);
+    },
     say: (text, kind) => { agent.say(text, kind); },
     setAgentStatus: (state, detail) => { agent.setStatus(state, detail); },
     agentStatus: () => agent.status,
@@ -381,6 +395,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     log.info('shutting down…');
     for (const st of lastChanged.values()) if (st.timer) clearTimeout(st.timer);
     events.close();
+    oneshot.close();
     recorder.close();
     userPoseFeed.close();
     await Promise.allSettled([

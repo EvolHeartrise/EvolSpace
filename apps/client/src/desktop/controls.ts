@@ -8,6 +8,7 @@
 //   LMB hold            pinch (grab, press, …, whatever the bindings say)
 //   Ctrl+LMB            'select' command on the entity under the cursor
 //   V hold              push-to-talk           P perf overlay   H hide page panel
+//   B hold              push-to-talk to a one-off agent (fresh context, expires when done)
 //
 // The synthesized right hand sits at arm's length from the (estimated) shoulder
 // on the line toward the point under the cursor, with its ray anchor exactly on
@@ -44,7 +45,8 @@ export interface DesktopDeps {
   /** Raycast in space coordinates against the scene. */
   raycast(origin: Vec3, dir: Vec3): { entity: string; point: Vec3; distance: number } | null;
   runCommand(name: string, args: Record<string, unknown> | undefined, phase: 'start' | 'end'): void;
-  ptt(phase: 'start' | 'end'): void;
+  /** `oneshot`: the one-off agent key (B) rather than the main session's (V). */
+  ptt(phase: 'start' | 'end', oneshot: boolean): void;
   key?(key: string): void;
 }
 
@@ -75,7 +77,8 @@ export class DesktopControls {
   /** While pinching: depth (m from camera) of the grabbed point along the mouse ray. */
   private grabDepth = 0;
   private selecting = false;
-  private pttHeld = false;
+  /** The push-to-talk key being held (V or B), if any. */
+  private pttHeld: 'KeyV' | 'KeyB' | null = null;
   private readonly raycaster = new THREE.Raycaster();
   private readonly disposers: Array<() => void> = [];
 
@@ -237,9 +240,10 @@ export class DesktopControls {
     if (isTextEntry(ev.target)) return;
     if (down && this.keyFilter?.(ev)) return;
     if (down) this.keys.add(ev.code); else this.keys.delete(ev.code);
-    if (ev.code === 'KeyV') {
-      if (down && !ev.repeat && !this.pttHeld) { this.pttHeld = true; this.deps.ptt('start'); }
-      if (!down && this.pttHeld) { this.pttHeld = false; this.deps.ptt('end'); }
+    if (ev.code === 'KeyV' || ev.code === 'KeyB') {
+      const oneshot = ev.code === 'KeyB';
+      if (down && !ev.repeat && !this.pttHeld) { this.pttHeld = ev.code; this.deps.ptt('start', oneshot); }
+      if (!down && this.pttHeld === ev.code) { this.pttHeld = null; this.deps.ptt('end', oneshot); }
       return;
     }
     if (down && !ev.repeat && (ev.code === 'KeyP' || ev.code === 'KeyH')) this.deps.key?.(ev.code);
@@ -248,7 +252,7 @@ export class DesktopControls {
   private releaseAll(): void {
     this.keys.clear();
     this.drag = null;
-    if (this.pttHeld) { this.pttHeld = false; this.deps.ptt('end'); }
+    if (this.pttHeld) { this.deps.ptt('end', this.pttHeld === 'KeyB'); this.pttHeld = null; }
     if (this.selecting) { this.selecting = false; this.deps.runCommand('select', undefined, 'end'); }
     this.pinching = false;
   }

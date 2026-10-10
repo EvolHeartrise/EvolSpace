@@ -39,6 +39,7 @@ Without WebXR (or with `role=desktop`) the page runs **desktop mode**:
 | LMB hold | **pinch** with the right hand (grab, press, slider drag … whatever the bindings say) |
 | Ctrl+LMB | `select` command on the entity under the cursor |
 | hold V | push-to-talk |
+| hold B | push-to-talk to a **one-off agent**: a fresh headless `claude -p` with none of the main session's context, no fast path; it replies in the agent panel and exits when done (`apps/server/src/oneshot.ts`) |
 | P / H | perf overlay / hide page panel |
 
 The mouse hand is a synthesized `HandFrame` placed so the engine's
