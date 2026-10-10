@@ -9,7 +9,9 @@
 import type { ChannelValue, InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
 import type * as THREE from 'three';
 import { disposeTree, ownMaterial, sharedGeometry, hitMaterial } from '../../shared/resources.ts';
-import { makeText, type Text } from '../../shared/text.ts';
+import { makeText, setColorRanges, type Text } from '../../shared/text.ts';
+import { colorRanges, highlight, languageFor, SYNTAX_COLORS, type Span, type TokenKind } from '../../shared/syntax.ts';
+import { hexToInt } from '../../shared/color.ts';
 import { makeIcon, setIcon } from '../../shared/icons.ts';
 import { formatBytes, truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
@@ -245,6 +247,11 @@ const definition: WidgetDefinition<Props> = {
     /** Text lines that fit the preview body (same height as the list pane). */
     const previewLines = () => Math.max(5, Math.floor((listH() - 2 * PAD - 0.06) / (0.0105 * 1.25)));
     let previewBody: Text | null = null, previewNums: Text | null = null;
+    // syntax highlighting of the previewed text: lines (tabs expanded) + token spans, per preview
+    let hlLines: string[] = [];
+    let hlSpans: Span[][] = [];
+    let hlLang = '';
+    const syntaxInts = Object.fromEntries(Object.entries(SYNTAX_COLORS).map(([k, v]) => [k, hexToInt(v)])) as Record<TokenKind, number>;
     function renderPreview(): void {
       const key = preview ? `${preview.path}|${preview.type}|${preview.src ?? ''}|${preview.text?.length ?? 0}` : '';
       if (key !== previewKey) {
@@ -255,15 +262,25 @@ const definition: WidgetDefinition<Props> = {
         imageTex?.dispose();
         imageTex = null;
         if (preview) buildPreview(preview);
+        if (preview?.type === 'text') {
+          const lang = languageFor(preview.name);
+          hlLines = (preview.text ?? '').replace(/\t/g, '  ').split('\n');
+          hlSpans = highlight(hlLines.join('\n'), lang);
+          hlLang = lang?.id ?? '';
+        } else { hlLines = []; hlSpans = []; hlLang = ''; }
       }
       if (preview?.type === 'text' && previewBody && previewNums) {
-        const lines = (preview.text ?? '').split('\n');
+        const lines = hlLines;
         const visible = previewLines();
         const from = Math.min(Math.max(0, Math.round(textScroll)), Math.max(0, lines.length - visible));
         textScroll = from;
         const shownLines = lines.slice(from, from + visible);
         const cols = Math.floor((PREVIEW_W - 0.08) / (0.0105 * 0.6));
-        previewBody.set(shownLines.map((l) => (l.length > cols ? l.slice(0, cols - 1) + '…' : l).replace(/\t/g, '  ')).join('\n'));
+        const shown = shownLines.map((l) => (l.length > cols ? l.slice(0, cols - 1) + '…' : l));
+        previewBody.set(shown.join('\n'));
+        // colors stop before a truncation ellipsis (it keeps the base color)
+        const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
+        setColorRanges(previewBody, hlLang ? colorRanges(hlSpans.slice(from, from + visible), shown.map((l) => l.length), syntaxInts, hexToInt(theme.text), clips) : null);
         previewNums.set(shownLines.map((_, i) => String(from + i + 1)).join('\n'));
       }
     }
