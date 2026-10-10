@@ -1,4 +1,4 @@
-// fb-tunnel — pure model: tunnel geometry, the wall layout (which entry sits where), path levels and
+// tunnel — pure model: tunnel geometry, the wall layout (which entry sits where), path levels and
 // the ring plan of a navigation (which ring moves from which depth slot to which). No three.js here, so
 // the layout is unit-testable and identical on every client (stable spatial memory per folder).
 //
