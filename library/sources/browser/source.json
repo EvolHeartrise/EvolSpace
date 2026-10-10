@@ -1,0 +1,8 @@
+{
+  "description": "Headless Chromium (Playwright, persistent profile in data/browser-profile) that Claude drives with scripts/browser.mjs over CDP 127.0.0.1:9333 and the user watches/taps in the browser widget: live JPEG frames on browser.frame, page state on browser.state, agent actions on browser.action, commands on browser.ctl.",
+  "command": "node",
+  "args": ["browser.mjs", "--prefix", "browser", "--cdp-port", "9333", "--width", "1280", "--height", "800"],
+  "cwd": ".",
+  "autostart": false,
+  "restart": true
+}
