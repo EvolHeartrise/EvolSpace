@@ -1,4 +1,4 @@
-// File-system source for the `file-browser` widget: directory listings and file previews.
+// File-system source for the file-browser widgets (fb-columns, fb-palm, fb-tunnel): directory listings and file previews.
 //
 //   <P>.request = {cmd: 'list', path, hidden?, reply, nonce} | {cmd: 'preview', path, reply, nonce}
 //     path: absolute, or "~" / "~/…" for the home folder; reply: the channel to answer on
@@ -362,7 +362,7 @@ async function follow(channel, cb) {
 }
 
 /**
- * Place a file / folder in the room (the palm browser's drag-out): spawn a `file-browser` root entity at the
+ * Place a file / folder in the room (the palm browser's drag-out): spawn an `fb-columns` root entity at the
  * drop point — on the folder, or on a file's folder with that file previewed.
  *   <P>.palm.place = {path, type: 'file'|'dir'|'link', name?, position: [x,y,z], rotation?: [x,y,z,w], reply?, nonce?}
  *   reply ← {nonce, ok, entity?, error?}
@@ -375,8 +375,8 @@ async function place(req) {
   const isDir = req.type === 'dir';
   const rot = Array.isArray(req.rotation) && req.rotation.length === 4 && req.rotation.every(Number.isFinite) ? req.rotation : [0, 0, 0, 1];
   const entity = {
-    widget: 'file-browser', name: `Files · ${path.basename(abs) || abs}`,
-    props: isDir ? { path: displayPath(abs) } : { path: displayPath(path.dirname(abs)), file: abs, rows: 10 },
+    widget: 'fb-columns', name: `Files · ${path.basename(abs) || abs}`,
+    props: isDir ? { path: displayPath(abs) } : { path: displayPath(path.dirname(abs)), file: abs },
     transform: { position: req.position, rotation: rot, scale: [1, 1, 1] },
   };
   try {
