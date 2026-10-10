@@ -1,4 +1,4 @@
-// fb-tunnel — "Files · Tunnel": navigate the file system by moving THROUGH DEPTH (via the `files` source).
+// tunnel — navigate the file system by moving THROUGH DEPTH (via the `files` source).
 //
 // The entity origin is the viewing mouth of a tunnel that recedes away from you (−Z). At its far end
 // floats the PORTAL of the current folder (name, counts, up / home / hidden buttons). The folder's
@@ -18,7 +18,7 @@
 //                                 text or the image); pinch the card again or ✕ to retract it
 //   drag a card sideways ........ page that arc when a folder has more entries than fit (or tap ›)
 //
-// Requests go to <prefix>.request with reply channels <prefix>.fb-tunnel.<entityId>.list / .preview;
+// Requests go to <prefix>.request with reply channels <prefix>.tunnel.<entityId>.list / .preview;
 // several clients share them, so replies are matched by path. The path (and the previewed file) persist.
 
 import type { ChannelValue, InteractionEvent, WidgetDefinition } from '@evolspace/protocol';
@@ -132,14 +132,14 @@ const definition: WidgetDefinition<Props> = {
     path: { type: 'string', description: 'Current folder (display path), on every navigation.' },
     selected: { type: 'string', description: 'Path of the file last pinched.' },
   },
-  interactions: [dragBinding('fb-tunnel-drag', 'drag')],
+  interactions: [dragBinding('tunnel-drag', 'drag')],
   size: [1.2, 1.2, 1.0],
   create(ctx) {
     const T = ctx.THREE;
     const theme = ctx.theme;
     const prefix = () => String(ctx.props.prefix || 'files');
-    const listCh = () => `${prefix()}.fb-tunnel.${ctx.entityId}.list`;
-    const previewCh = () => `${prefix()}.fb-tunnel.${ctx.entityId}.preview`;
+    const listCh = () => `${prefix()}.tunnel.${ctx.entityId}.list`;
+    const previewCh = () => `${prefix()}.tunnel.${ctx.entityId}.preview`;
 
     // ---- preallocated math (no per-frame allocation) ---------------------------------------------
     const EYE = new T.Vector3(0, 0, GEO.EYE_Z);
@@ -362,7 +362,7 @@ const definition: WidgetDefinition<Props> = {
     function onList(v: ChannelValue): void {
       if (!v || typeof v !== 'object' || isTensor(v) || Array.isArray(v) || (v as Listing).kind !== 'list') return;
       const l = v as Listing;
-      if (typeof l.path !== 'string' || !Array.isArray(l.entries)) { ctx.error('fb-tunnel: malformed listing'); return; }
+      if (typeof l.path !== 'string' || !Array.isArray(l.entries)) { ctx.error('tunnel: malformed listing'); return; }
       cachePut(l);
       if (want && matches(l, want)) {
         want = '';
@@ -645,7 +645,7 @@ const definition: WidgetDefinition<Props> = {
           mat.map = t;
           mat.needsUpdate = true;
           img.visible = true;
-        }, undefined, () => { if (!disposed) ctx.error(`fb-tunnel: could not load ${p.src}`); });
+        }, undefined, () => { if (!disposed) ctx.error(`tunnel: could not load ${p.src}`); });
         pv.tex = tex;
       } else {
         const msg = !p ? 'Loading…' : p.type === 'binary' ? 'Binary file: no preview' : p.type === 'denied' ? (p.error ?? 'Private file') : p.type === 'image' ? 'Image preview appears in the headset / browser' : (p.error ?? 'No preview');

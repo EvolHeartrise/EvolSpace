@@ -1,4 +1,4 @@
-// File-system source for the file-browser widgets (explorer, fb-palm, fb-tunnel): directory listings and file previews.
+// File-system source for the file-browser widgets (explorer, fb-palm, tunnel): directory listings and file previews.
 //
 //   <P>.request = {cmd: 'list', path, hidden?, reply, nonce} | {cmd: 'preview', path, reply, nonce}
 //     path: absolute, or "~" / "~/…" for the home folder; reply: the channel to answer on

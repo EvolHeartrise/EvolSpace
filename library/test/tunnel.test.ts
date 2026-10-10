@@ -1,10 +1,10 @@
-// fb-tunnel — tunnel geometry/layout model and the widget's flights, previews, paging and protocol.
+// tunnel — tunnel geometry/layout model and the widget's flights, previews, paging and protocol.
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import tunnel from '../widgets/fb-tunnel/widget.ts';
+import tunnel from '../widgets/tunnel/widget.ts';
 import {
   GEO, arcCapacity, arcSlots, levels, navKind, normPath, ringPlan, ringZ, rowSpecs, slotPosition, splitEntries, tileLabel, joinPath, folderTitle,
-} from '../widgets/fb-tunnel/model.ts';
+} from '../widgets/tunnel/model.ts';
 import { mount, type Harness } from './harness.ts';
 
 describe('model', () => {
@@ -110,14 +110,14 @@ async function opened(path = '~/proj') {
   const h = await mount(tunnel, { path }, { user: USER });
   const r = lastReq(h);
   expect(r).toMatchObject({ cmd: 'list', path });
-  expect(r.reply).toBe('files.fb-tunnel.test-entity.list');
+  expect(r.reply).toBe('files.tunnel.test-entity.list');
   return h;
 }
 
 it('opens the folder: folders on the upper arc, files on the lower, ancestors as tagged rings', async () => {
   const h = await opened();
   expect(h.hasText('loading…')).toBe(true);
-  h.publish('files.fb-tunnel.test-entity.list', listing('~/proj', [['src', 'dir'], ['docs', 'dir'], ['README.md', 'file'], ['main.ts', 'file']]));
+  h.publish('files.tunnel.test-entity.list', listing('~/proj', [['src', 'dir'], ['docs', 'dir'], ['README.md', 'file'], ['main.ts', 'file']]));
   h.frame(40);
   for (const t of ['proj', 'docs', 'src', 'README.md', 'main.ts', 'Home']) expect(h.hasText(t), t).toBe(true);
   expect(h.hasText(/2 folders · 2 files/)).toBe(true);
@@ -127,7 +127,7 @@ it('opens the folder: folders on the upper arc, files on the lower, ancestors as
   expect(h.partPosition(`tile:${cap}`)[1]).toBeLessThan(-0.2);
   expect(h.partPosition('tile:0')[0]).toBeLessThan(h.partPosition('tile:1')[0]); // docs left of src
   // a reply for another folder (another client's request) doesn't change the wall
-  h.publish('files.fb-tunnel.test-entity.list', listing('~/other', [['zzz', 'dir']]));
+  h.publish('files.tunnel.test-entity.list', listing('~/other', [['zzz', 'dir']]));
   h.frame(5);
   expect(h.hasText('zzz')).toBe(false);
   expect(h.rec.errors).toEqual([]);
@@ -137,7 +137,7 @@ it('opens the folder: folders on the upper arc, files on the lower, ancestors as
 
 it('flies into a pinched folder and backs out with a pull toward yourself', async () => {
   const h = await opened();
-  const ch = 'files.fb-tunnel.test-entity.list';
+  const ch = 'files.tunnel.test-entity.list';
   h.publish(ch, listing('~/proj', [['docs', 'dir'], ['src', 'dir'], ['a.ts', 'file']]));
   h.frame(40);
   h.press('tile:1', 'drag'); // src
@@ -187,18 +187,18 @@ it('flies into a pinched folder and backs out with a pull toward yourself', asyn
 
 it('extrudes a file preview from its card, scrolls it and retracts it', async () => {
   const h = await opened();
-  h.publish('files.fb-tunnel.test-entity.list', listing('~/proj', [['main.ts', 'file']]));
+  h.publish('files.tunnel.test-entity.list', listing('~/proj', [['main.ts', 'file']]));
   h.frame(40);
   const cap = arcCapacity();
   h.press(`tile:${cap}`, 'drag');
-  expect(lastReq(h)).toMatchObject({ cmd: 'preview', path: '~/proj/main.ts', reply: 'files.fb-tunnel.test-entity.preview' });
+  expect(lastReq(h)).toMatchObject({ cmd: 'preview', path: '~/proj/main.ts', reply: 'files.tunnel.test-entity.preview' });
   expect(h.emitsOn('selected').at(-1)).toBe('~/proj/main.ts');
   expect(h.rec.setProps.at(-1)).toEqual({ file: '~/proj/main.ts' });
   const text = Array.from({ length: 80 }, (_, i) => `const v${i} = ${i};`).join('\n');
   // someone else's preview is ignored
-  h.publish('files.fb-tunnel.test-entity.preview', { kind: 'preview', path: `${HOME}/proj/other.ts`, name: 'other.ts', type: 'text', text: 'nope', lines: 1 });
+  h.publish('files.tunnel.test-entity.preview', { kind: 'preview', path: `${HOME}/proj/other.ts`, name: 'other.ts', type: 'text', text: 'nope', lines: 1 });
   expect(h.hasText('nope')).toBe(false);
-  h.publish('files.fb-tunnel.test-entity.preview', { kind: 'preview', path: `${HOME}/proj/main.ts`, name: 'main.ts', size: 900, mtime: Date.now(), type: 'text', text, lines: 80 });
+  h.publish('files.tunnel.test-entity.preview', { kind: 'preview', path: `${HOME}/proj/main.ts`, name: 'main.ts', size: 900, mtime: Date.now(), type: 'text', text, lines: 80 });
   h.frame(40);
   expect(h.hasText('const v0 = 0;')).toBe(true);
   expect(h.hasText(/^1\n2\n3/)).toBe(true);
@@ -219,7 +219,7 @@ it('pages a crowded arc with a sideways drag', async () => {
   const h = await opened();
   const cap = arcCapacity();
   const names: Array<[string, 'dir' | 'file']> = Array.from({ length: cap + 5 }, (_, i) => [`f${String(i).padStart(2, '0')}.txt`, 'file']);
-  h.publish('files.fb-tunnel.test-entity.list', listing('~/proj', names));
+  h.publish('files.tunnel.test-entity.list', listing('~/proj', names));
   h.frame(40);
   expect(h.hasText('f00.txt')).toBe(true);
   expect(h.hasText(`f${cap + 4}.txt`)).toBe(false);
@@ -237,7 +237,7 @@ it('pages a crowded arc with a sideways drag', async () => {
 
 it('follows path/file props and inputs, keeps the text budget, survives junk', async () => {
   const h = await opened('~');
-  h.publish('files.fb-tunnel.test-entity.list', { kind: 'list', path: HOME, display: '~', parent: '/home', truncated: false, entries: [entry('proj', 'dir')] });
+  h.publish('files.tunnel.test-entity.list', { kind: 'list', path: HOME, display: '~', parent: '/home', truncated: false, entries: [entry('proj', 'dir')] });
   h.frame(40);
   await h.setProps({ path: '~/proj' });
   expect(lastReq(h)).toMatchObject({ cmd: 'list', path: '~/proj' });
@@ -245,8 +245,8 @@ it('follows path/file props and inputs, keeps the text budget, survives junk', a
   expect(lastReq(h)).toMatchObject({ cmd: 'list', path: '~' });
   h.input('preview', '~/notes.md');
   expect(lastReq(h)).toMatchObject({ cmd: 'preview', path: '~/notes.md' });
-  h.publish('files.fb-tunnel.test-entity.list', { kind: 'list', path: 42 } as never);
-  h.publish('files.fb-tunnel.test-entity.list', 'garbage');
+  h.publish('files.tunnel.test-entity.list', { kind: 'list', path: 42 } as never);
+  h.publish('files.tunnel.test-entity.list', 'garbage');
   h.frame(60);
   expect(h.rec.errors.length).toBe(1);
   expect(h.texts.length).toBeLessThanOrEqual(52);
