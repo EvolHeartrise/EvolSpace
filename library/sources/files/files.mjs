@@ -7,6 +7,16 @@
 //                      truncated, error?, nonce}
 //   reply (preview) = {kind: 'preview', path, name, size, mtime, type: 'text'|'image'|'binary'|'denied'|'error',
 //                      text?, lines?, truncated?, src? ('/media/preview-….jpg'), error?, nonce}
+//   {cmd: 'tree', path, depth? (1–3, default 2), hidden?, reply, nonce}
+//     → {kind: 'tree', path, display, root: Node, partial, error?, nonce}
+//       Node = {name, path, type: dir|file, size (bytes, recursive for dirs), files (count), mtime, ext, children?: Node[]}
+//       Sizes are totals over the whole subtree (bounded: ~60k entries / 4 s, then partial: true); children
+//       are listed down to `depth`, biggest first, at most 200 per folder.
+//   {cmd: 'search', path, query, limit? (default 60), hidden?, reply, nonce}
+//     → {kind: 'search', path, query, results: [{name, path, display, type, size, mtime, ext, score}], scanned, partial, nonce}
+//       Fuzzy name match (substring beats subsequence; shorter / shallower wins) under `path`, skipping
+//       node_modules, .git, caches and simple .gitignore'd names. An empty query returns the most recently
+//       modified files ("recents"). The name index of a root is cached for ~60 s, so typing is fast.
 //
 // Privacy: hidden entries (dot files) are listed only with hidden: true, and some paths are never
 // listed or read even then (ssh/gpg keys, the EvolSpace secrets file, .env files, credential stores).
@@ -125,6 +135,135 @@ export async function preview(p) {
   }
 }
 
+// ---- tree (recursive sizes) -------------------------------------------------------------------
+
+const SKIP_DIRS = new Set(['node_modules', '.git', '.cache', '__pycache__', '.venv', 'venv', '.mypy_cache', '.pytest_cache', '.next', 'dist', 'build', 'target', '.npm', '.cargo', '.rustup', 'proc', 'sys']);
+
+export async function tree(p, depth = 2, hidden = false) {
+  const abs = resolvePath(p);
+  const base = { kind: 'tree', path: abs, display: displayPath(abs) };
+  if (denied(abs)) return { ...base, root: null, partial: false, error: 'This folder is private and never shown.' };
+  const budget = { entries: 60000, until: Date.now() + 4000, partial: false };
+  depth = Math.max(1, Math.min(3, Number(depth) || 2));
+  async function walk(dir, name, level) {
+    const node = { name, path: dir, type: 'dir', size: 0, files: 0, mtime: null, ext: '', children: level < depth ? [] : undefined };
+    if (budget.entries <= 0 || Date.now() > budget.until) { budget.partial = true; return node; }
+    let ds;
+    try { ds = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return node; }
+    for (const d of ds) {
+      if (--budget.entries <= 0 || Date.now() > budget.until) { budget.partial = true; break; }
+      if (!hidden && d.name.startsWith('.')) continue;
+      const full = path.join(dir, d.name);
+      if (denied(full) || d.isSymbolicLink()) continue;
+      if (d.isDirectory()) {
+        const child = SKIP_DIRS.has(d.name) && level > 0 ? { name: d.name, path: full, type: 'dir', size: 0, files: 0, mtime: null, ext: '', skipped: true } : await walk(full, d.name, level + 1);
+        node.size += child.size; node.files += child.files;
+        node.children?.push(child);
+      } else if (d.isFile()) {
+        let st = null;
+        try { st = await fs.promises.stat(full); } catch { /* gone */ }
+        const size = st?.size ?? 0;
+        node.size += size; node.files += 1;
+        node.children?.push({ name: d.name, path: full, type: 'file', size, files: 1, mtime: st ? Math.round(st.mtimeMs) : null, ext: extOf(d.name) });
+      }
+    }
+    if (node.children) { node.children.sort((a, b) => b.size - a.size); node.children = node.children.slice(0, 200); }
+    return node;
+  }
+  const root = await walk(abs, path.basename(abs) || abs, 0);
+  return { ...base, root, partial: budget.partial };
+}
+
+// ---- search / recents --------------------------------------------------------------------------
+
+/** Fuzzy score of `name` for `q` (lowercase); 0 = no match. */
+export function fuzzyScore(name, q) {
+  const n = name.toLowerCase();
+  if (!q) return 1;
+  const i = n.indexOf(q);
+  if (i >= 0) return 1000 - i * 2 - (n.length - q.length) + (i === 0 ? 200 : 0) + (n === q ? 500 : 0);
+  let j = 0, gaps = 0, last = -1;
+  for (let k = 0; k < n.length && j < q.length; k++) if (n[k] === q[j]) { if (last >= 0) gaps += k - last - 1; last = k; j++; }
+  return j === q.length ? Math.max(1, 300 - gaps * 5 - (n.length - q.length)) : 0;
+}
+
+/** Simple .gitignore names (no globs / negation) to skip below that folder: "data/", "node_modules", "*.log" is ignored. */
+async function ignoredNames(dir) {
+  try {
+    const txt = await fs.promises.readFile(path.join(dir, '.gitignore'), 'utf8');
+    return new Set(txt.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !l.startsWith('!') && !/[*?[\]]/.test(l))
+      .map((l) => l.replace(/^\//, '').replace(/\/$/, '')).filter((l) => l && !l.includes('/')));
+  } catch { return null; }
+}
+
+/** Name index of everything under a root (cached ~60 s; built breadth-first within a budget). */
+const indexes = new Map();
+async function indexOf(abs, hidden) {
+  const key = `${abs}|${hidden}`;
+  const cached = indexes.get(key);
+  if (cached && Date.now() - cached.at < 60000) return cached;
+  const entries = [];
+  const until = Date.now() + 8000;
+  let partial = false;
+  const queue = [[abs, 0, null]];
+  while (queue.length) {
+    const [dir, level, inherited] = queue.shift();
+    if (Date.now() > until || entries.length > 250000) { partial = true; break; }
+    let ds;
+    try { ds = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    const own = await ignoredNames(dir);
+    const ignore = own ? new Set([...(inherited ?? []), ...own]) : inherited;
+    for (const d of ds) {
+      if (!hidden && d.name.startsWith('.')) continue;
+      if (ignore?.has(d.name) || d.isSymbolicLink()) continue;
+      const full = path.join(dir, d.name);
+      if (denied(full)) continue;
+      const isDir = d.isDirectory();
+      if (isDir && (SKIP_DIRS.has(d.name) || d.name === 'browser-profile')) continue;
+      entries.push({ name: d.name, path: full, type: isDir ? 'dir' : 'file', level, mtime: undefined });
+      if (isDir && level < 10) queue.push([full, level + 1, ignore]);
+    }
+  }
+  const idx = { at: Date.now(), entries, partial };
+  indexes.set(key, idx);
+  if (indexes.size > 8) indexes.delete(indexes.keys().next().value);
+  return idx;
+}
+
+async function statInto(e) {
+  if (e.mtime !== undefined) return e;
+  try { const st = await fs.promises.stat(e.path); e.mtime = Math.round(st.mtimeMs); e.size = e.type === 'file' ? st.size : null; } catch { e.mtime = null; e.size = null; }
+  return e;
+}
+
+export async function search(p, query, limit = 60, hidden = false) {
+  const abs = resolvePath(p);
+  const q = String(query ?? '').trim().toLowerCase();
+  const base = { kind: 'search', path: abs, display: displayPath(abs), query: q };
+  if (denied(abs)) return { ...base, results: [], scanned: 0, partial: false, error: 'This folder is private and never shown.' };
+  limit = Math.max(1, Math.min(500, Number(limit) || 60));
+  const idx = await indexOf(abs, hidden);
+  let picked;
+  if (q) {
+    const scored = [];
+    for (const e of idx.entries) { const sc = fuzzyScore(e.name, q); if (sc > 0) scored.push([sc - e.level * 10, e]); }
+    scored.sort((a, b) => b[0] - a[0]);
+    picked = scored.slice(0, limit).map(([sc, e]) => ({ e, score: sc }));
+  } else {
+    // recents: stat files (bounded), newest first
+    const files = idx.entries.filter((e) => e.type === 'file').slice(0, 60000);
+    for (let i = 0; i < files.length; i += 500) await Promise.all(files.slice(i, i + 500).map(statInto));
+    files.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+    picked = files.slice(0, limit).map((e) => ({ e, score: 0 }));
+  }
+  const results = [];
+  for (const { e, score } of picked) {
+    await statInto(e);
+    results.push({ name: e.name, path: e.path, display: displayPath(e.path), type: e.type, size: e.size ?? null, mtime: e.mtime ?? null, ext: e.type === 'file' ? extOf(e.name) : '', score });
+  }
+  return { ...base, results, scanned: idx.entries.length, partial: idx.partial };
+}
+
 async function publish(channel, value) {
   try {
     const r = await fetch(`${EVOL}/api/channels/${encodeURIComponent(channel)}?producer=files`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
@@ -134,7 +273,10 @@ async function publish(channel, value) {
 
 async function handle(req) {
   if (!req || typeof req !== 'object' || typeof req.reply !== 'string' || !req.reply.startsWith(`${P}.`)) return;
-  const out = req.cmd === 'preview' ? await preview(req.path) : await list(req.path, !!req.hidden);
+  const out = req.cmd === 'preview' ? await preview(req.path)
+    : req.cmd === 'tree' ? await tree(req.path, req.depth, !!req.hidden)
+      : req.cmd === 'search' ? await search(req.path, req.query, req.limit, !!req.hidden)
+        : await list(req.path, !!req.hidden);
   await publish(req.reply, { ...out, nonce: req.nonce ?? null });
 }
 
