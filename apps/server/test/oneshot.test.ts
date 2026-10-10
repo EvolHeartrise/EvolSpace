@@ -61,6 +61,7 @@ describe('one-off agents', () => {
     expect(cwd).toBe('/repo');
     expect(args).toEqual(expect.arrayContaining(['-p', '--no-session-persistence', '--output-format', 'stream-json', '--verbose']));
     expect(args[args.indexOf('--permission-prompts') + 1]).toBe('none');
+    expect(args[args.indexOf('--model') + 1]).toBe('sonnet');
     expect(env.EVOL_URL).toBe('http://127.0.0.1:9999');
     expect(env.EVOL_BRIDGE_CHANNEL).toBe('0');
     expect(env.EVOL_STATUS_HOOK).toBe('0');

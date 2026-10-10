@@ -19,7 +19,8 @@
 // indicator (EVOL_STATUS_HOOK=0), so it never steals the main session's requests
 // or clobbers its "working" line.
 //
-// Env: EVOL_CLAUDE_BIN (default 'claude'), EVOL_ONESHOT_PERMISSION_MODE (default 'auto').
+// Env: EVOL_CLAUDE_BIN (default 'claude'), EVOL_ONESHOT_MODEL (default 'sonnet': the latest Sonnet),
+// EVOL_ONESHOT_PERMISSION_MODE (default 'auto').
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import type { OneshotAgentStatus, ServerEventType, Vec3 } from '@evolspace/protocol';
 import { describeTool, short } from '../../../scripts/hooks/status.mjs';
@@ -38,6 +39,8 @@ export interface OneshotDeps {
 
 export interface OneshotOptions {
   bin?: string;
+  /** Model alias or id passed as --model. Default 'sonnet'. */
+  model?: string;
   permissionMode?: string;
   /** A one-off agent still running after this long is killed. Default 20 min. */
   timeoutMs?: number;
@@ -116,6 +119,7 @@ export class OneshotAgents {
   private nextId = 1;
   private closed = false;
   private readonly bin: string;
+  private readonly model: string;
   private readonly permissionMode: string;
   private readonly timeoutMs: number;
   private readonly maxConcurrent: number;
@@ -125,6 +129,8 @@ export class OneshotAgents {
 
   constructor(private readonly deps: OneshotDeps, opts: OneshotOptions = {}) {
     this.bin = opts.bin ?? process.env.EVOL_CLAUDE_BIN ?? 'claude';
+    const model = opts.model ?? process.env.EVOL_ONESHOT_MODEL ?? 'sonnet';
+    this.model = /^[A-Za-z0-9._:-]+$/.test(model) ? model : 'sonnet'; // a bare token (see permissionMode)
     const mode = opts.permissionMode ?? process.env.EVOL_ONESHOT_PERMISSION_MODE ?? 'auto';
     this.permissionMode = /^[A-Za-z]+$/.test(mode) ? mode : 'auto'; // a bare token: argv may go through a shell on Windows
     this.timeoutMs = opts.timeoutMs ?? 20 * 60_000;
@@ -160,7 +166,7 @@ export class OneshotAgents {
     const env: NodeJS.ProcessEnv = { ...process.env, EVOL_URL: this.deps.baseUrl(), EVOL_STATUS_HOOK: '0', EVOL_BRIDGE_CHANNEL: '0' };
     for (const k of SESSION_ENV) delete env[k];
     const args = [
-      '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
+      '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence', '--model', this.model,
       '--permission-mode', this.permissionMode, '--permission-prompts', 'none',
       '--disallowedTools', 'AskUserQuestion',
     ];
