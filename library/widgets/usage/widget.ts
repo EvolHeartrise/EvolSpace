@@ -1,4 +1,4 @@
-// claude-usage — Claude plan usage limits: one bar per rate-limit window (current 5-hour session,
+// usage — Claude plan usage limits: one bar per rate-limit window (current 5-hour session,
 // weekly, …) with % used, colored by level, and a live "resets in" countdown. Data from the
 // `claude-usage` source on `claude.usage`: {windows: [{key, label, pct, resetsAt (ms)}], model, at}.
 
@@ -143,7 +143,7 @@ const definition: WidgetDefinition<Props> = {
 
     function setData(v: ChannelValue): void {
       const o = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-      if (!o || !Array.isArray(o.windows)) { ctx.error('claude-usage: expected {windows: [...]}'); return; }
+      if (!o || !Array.isArray(o.windows)) { ctx.error('usage: expected {windows: [...]}'); return; }
       windows = (o.windows as unknown[]).flatMap((x) => {
         const w = x as Partial<Win>;
         return w && typeof w.label === 'string' && Number.isFinite(w.pct) ? [{ key: String(w.key ?? ''), label: w.label, pct: Number(w.pct), resetsAt: Number.isFinite(w.resetsAt) ? Number(w.resetsAt) : null }] : [];

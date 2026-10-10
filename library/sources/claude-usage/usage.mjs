@@ -1,4 +1,4 @@
-// Claude plan usage for the `claude-usage` widget. Claude Code hands its status line command the
+// Claude plan usage for the `usage` widget. Claude Code hands its status line command the
 // plan's rate-limit windows (rate_limits.five_hour / seven_day: used_percentage, resets_at; Pro/Max
 // only, after the first response of a session). ~/.claude/statusline-command.sh saves that JSON to
 // ~/.cache/evolspace/claude-usage.json; this source watches the file and publishes

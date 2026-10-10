@@ -1,6 +1,6 @@
-// claude-usage — usage bars, levels, reset countdowns.
+// usage — usage bars, levels, reset countdowns.
 import { expect, it } from 'vitest';
-import claudeUsage, { formatDuration } from '../widgets/claude-usage/widget.ts';
+import usage, { formatDuration } from '../widgets/usage/widget.ts';
 import { mount } from './harness.ts';
 
 it('formats countdowns', () => {
@@ -11,7 +11,7 @@ it('formats countdowns', () => {
 });
 
 it('shows one bar per window with % and a reset countdown; waits politely without data', async () => {
-  const h = await mount(claudeUsage, {});
+  const h = await mount(usage, {});
   h.frame();
   expect(h.hasText('Waiting for usage data (claude-usage source)…')).toBe(true);
   h.publish('claude.usage', { windows: [], note: 'No usage yet.' });
