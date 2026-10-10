@@ -8,6 +8,12 @@
 //   - the process exits — the agent expires — as soon as the task is done; its
 //     final message is shown in the XR agent panel.
 //
+// While it runs, clients show it as a small orb floating where the user was when
+// they invoked it (OneshotAgentStatus, ServerMessage 'agent.oneshots'): its
+// activity comes from the child's stream-json output (tool calls → the same
+// labels as the main session's status hook). A finished agent lingers there for
+// a few seconds, then disappears.
+//
 // The child's evolspace MCP bridge runs without the voice channel
 // (EVOL_BRIDGE_CHANNEL=0) and its Claude Code hooks don't drive the shared status
 // indicator (EVOL_STATUS_HOOK=0), so it never steals the main session's requests
@@ -15,7 +21,9 @@
 //
 // Env: EVOL_CLAUDE_BIN (default 'claude'), EVOL_ONESHOT_PERMISSION_MODE (default 'auto').
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
-import type { ServerEventType } from '@evolspace/protocol';
+import type { OneshotAgentStatus, ServerEventType, Vec3 } from '@evolspace/protocol';
+import { describeTool, short } from '../../../scripts/hooks/status.mjs';
+import { headPose, placeInFront } from './commands.ts';
 
 export interface OneshotDeps {
   repoRoot: string;
@@ -24,6 +32,8 @@ export interface OneshotDeps {
   say(text: string, kind: 'reply' | 'info' | 'error'): void;
   event(type: ServerEventType, data: Record<string, unknown>): void;
   log(level: 'info' | 'warn' | 'error', message: string): void;
+  /** The list of shown agents changed (broadcast it to clients). */
+  onChange?(agents: OneshotAgentStatus[]): void;
 }
 
 export interface OneshotOptions {
@@ -33,6 +43,8 @@ export interface OneshotOptions {
   timeoutMs?: number;
   /** Requests beyond this many running agents are refused. Default 3. */
   maxConcurrent?: number;
+  /** How long a finished agent stays visible. Default 8 s. */
+  lingerMs?: number;
   spawn?: typeof nodeSpawn;
   now?: () => number;
 }
@@ -48,9 +60,13 @@ const PREAMBLE = [
   'made with the one-off push-to-talk key. You share no context with their main Claude session, nobody watches this terminal,',
   'nothing can be approved interactively, and this process ends when you finish.',
   'Do the task, then end with a short spoken-style reply (1–3 sentences). That final message is shown to the user in XR',
-  'automatically, so do not also send it with `say` (use `status`/`say` only for progress during long work).',
+  'automatically, so do not also send it with `say`. Your progress is already shown in the space; do not call `status`.',
   'Do not ask questions: if the request is ambiguous, take the sensible reading and say what you did.',
 ].join('\n');
+
+/** Agents invoked from (nearly) the same spot stack upwards instead of overlapping. */
+const STACK_RADIUS = 0.12;
+const STACK_STEP = 0.08;
 
 const attr = (v: unknown): string | undefined =>
   typeof v === 'string' && v.trim() ? v.trim().replace(/[\r\n]+/g, ' ').replace(/"/g, "'").slice(0, 200) : undefined;
@@ -70,22 +86,40 @@ export function oneshotPrompt(text: string, context: Record<string, unknown>): s
   return `${PREAMBLE}\n\n<channel ${attrs}>${text}</channel>\n`;
 }
 
-interface Running {
+interface StreamResult { is_error?: boolean; result?: string; subtype?: string; total_cost_usd?: number; num_turns?: number }
+
+/**
+ * One line of `claude -p --output-format stream-json`: the activity it implies
+ * (tool call → working + label, text → thinking) and/or the final result.
+ */
+export function parseStreamLine(line: string): { activity?: { state: 'thinking' | 'working'; detail: string }; result?: StreamResult } {
+  let m: { type?: string; message?: { content?: unknown } } & StreamResult;
+  try { m = JSON.parse(line); } catch { return {}; }
+  if (m?.type === 'result') return { result: m };
+  if (m?.type !== 'assistant' || !Array.isArray(m.message?.content)) return {};
+  const blocks = m.message.content as Array<{ type?: string; name?: string; input?: unknown }>;
+  const tool = blocks.filter((b) => b?.type === 'tool_use').at(-1);
+  if (tool) return { activity: { state: 'working', detail: short(describeTool(String(tool.name ?? ''), tool.input) ?? 'Working', 70) } };
+  if (blocks.some((b) => b?.type === 'text' || b?.type === 'thinking')) return { activity: { state: 'thinking', detail: 'Thinking' } };
+  return {};
+}
+
+interface Agent {
   id: number;
-  child: ChildProcess;
-  text: string;
-  startedAt: number;
+  child: ChildProcess | null;
+  status: OneshotAgentStatus;
   timedOut: boolean;
 }
 
 export class OneshotAgents {
-  private readonly running = new Map<number, Running>();
+  private readonly agents = new Map<number, Agent>();
   private nextId = 1;
   private closed = false;
   private readonly bin: string;
   private readonly permissionMode: string;
   private readonly timeoutMs: number;
   private readonly maxConcurrent: number;
+  private readonly lingerMs: number;
   private readonly spawn: typeof nodeSpawn;
   private readonly now: () => number;
 
@@ -95,24 +129,38 @@ export class OneshotAgents {
     this.permissionMode = /^[A-Za-z]+$/.test(mode) ? mode : 'auto'; // a bare token: argv may go through a shell on Windows
     this.timeoutMs = opts.timeoutMs ?? 20 * 60_000;
     this.maxConcurrent = opts.maxConcurrent ?? 3;
+    this.lingerMs = opts.lingerMs ?? 8_000;
     this.spawn = opts.spawn ?? nodeSpawn;
     this.now = opts.now ?? Date.now;
   }
 
-  get count(): number { return this.running.size; }
+  /** Running agents (finished ones still lingering on screen don't count). */
+  get count(): number {
+    let n = 0;
+    for (const a of this.agents.values()) if (!a.status.done) n++;
+    return n;
+  }
 
-  /** Start a one-off agent for `text`. Returns its id, or null if refused. */
+  /** What clients show: running agents and recently finished ones. */
+  list(): OneshotAgentStatus[] {
+    return [...this.agents.values()].map((a) => ({ ...a.status }));
+  }
+
+  /**
+   * Start a one-off agent for `text`. `context.head` (the invoking head pose)
+   * places its orb. Returns its id, or null if refused.
+   */
   ask(text: string, context: Record<string, unknown> = {}): number | null {
     if (this.closed) return null;
-    if (this.running.size >= this.maxConcurrent) {
-      this.deps.say(`Already running ${this.running.size} one-off agents; try again when one finishes.`, 'info');
+    if (this.count >= this.maxConcurrent) {
+      this.deps.say(`Already running ${this.count} one-off agents; try again when one finishes.`, 'info');
       return null;
     }
     const id = this.nextId++;
     const env: NodeJS.ProcessEnv = { ...process.env, EVOL_URL: this.deps.baseUrl(), EVOL_STATUS_HOOK: '0', EVOL_BRIDGE_CHANNEL: '0' };
     for (const k of SESSION_ENV) delete env[k];
     const args = [
-      '-p', '--output-format', 'json', '--no-session-persistence',
+      '-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
       '--permission-mode', this.permissionMode, '--permission-prompts', 'none',
       '--disallowedTools', 'AskUserQuestion',
     ];
@@ -129,64 +177,109 @@ export class OneshotAgents {
       this.fail(id, text, `could not start ${this.bin}: ${(e as Error).message}`);
       return null;
     }
-    const r: Running = { id, child, text, startedAt: this.now(), timedOut: false };
-    this.running.set(id, r);
+    const { position, rotation } = this.place(context.head);
+    const a: Agent = {
+      id, child, timedOut: false,
+      status: { id, text, state: 'thinking', detail: 'Starting', since: this.now(), position, rotation },
+    };
+    this.agents.set(id, a);
 
-    let out = '';
+    let result: StreamResult | null = null;
+    let buf = '';
     let err = '';
-    child.stdout?.setEncoding('utf8').on('data', (c: string) => { if (out.length < 1_000_000) out += c; });
+    const onLine = (line: string) => {
+      if (!line.trim()) return;
+      const p = parseStreamLine(line);
+      if (p.result) result = p.result;
+      if (p.activity && !a.status.done && (p.activity.state !== a.status.state || p.activity.detail !== a.status.detail)) {
+        a.status = { ...a.status, ...p.activity };
+        this.changed();
+      }
+    };
+    child.stdout?.setEncoding('utf8').on('data', (c: string) => {
+      buf += c;
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+      if (buf.length > 4_000_000) buf = ''; // a runaway line: drop it
+    });
     child.stderr?.setEncoding('utf8').on('data', (c: string) => { err = (err + c).slice(-4000); });
     child.stdin?.on('error', () => { /* the exit handler reports it */ });
     child.stdin?.end(oneshotPrompt(text, context));
 
-    const timer = setTimeout(() => { r.timedOut = true; child.kill(); }, this.timeoutMs);
+    const timer = setTimeout(() => { a.timedOut = true; child.kill(); }, this.timeoutMs);
     timer.unref?.();
-    let done = false;
-    const finish = (code: number | null, spawnError?: Error) => {
-      if (done) return;
-      done = true;
+    let ended = false;
+    const end = (code: number | null, spawnError?: Error) => {
+      if (ended) return;
+      ended = true;
       clearTimeout(timer);
-      this.running.delete(id);
-      this.finish(r, code, out, err, spawnError);
+      onLine(buf);
+      this.finish(a, code, result, err, spawnError);
     };
-    child.on('error', (e) => finish(null, e));
-    child.on('close', (code) => finish(code));
+    child.on('error', (e) => end(null, e));
+    child.on('close', (code) => end(code));
 
     this.deps.log('info', `one-off agent #${id} started (pid ${child.pid ?? '?'}): ${text}`);
-    this.deps.event('agent.oneshot', { id, phase: 'start', text, ...(context.utteranceId ? { utteranceId: context.utteranceId } : {}) });
-    this.deps.say('One-off agent is on it.', 'info');
+    this.deps.event('agent.oneshot', { id, phase: 'start', text, position, ...(context.utteranceId ? { utteranceId: context.utteranceId } : {}) });
+    this.changed();
     return id;
   }
 
   /** Kill every running one-off agent (server shutdown). */
   close(): void {
     this.closed = true;
-    for (const r of this.running.values()) r.child.kill();
+    for (const a of this.agents.values()) a.child?.kill();
   }
 
-  private finish(r: Running, code: number | null, out: string, err: string, spawnError?: Error): void {
-    const durationMs = this.now() - r.startedAt;
-    const base = { id: r.id, phase: 'end', text: r.text, durationMs, exitCode: code };
+  /** In front of the invoking head pose (like a spawned widget), stacked above agents already there. */
+  private place(head: unknown): { position: Vec3; rotation: OneshotAgentStatus['rotation'] } {
+    const t = placeInFront(headPose(head), [0.3, 0.3, 0.3]);
+    const p: Vec3 = [t.position[0], t.position[1], t.position[2]];
+    const others = [...this.agents.values()].map((a) => a.status.position);
+    while (others.some((o) => Math.hypot(o[0] - p[0], o[2] - p[2]) < STACK_RADIUS && Math.abs(o[1] - p[1]) < STACK_STEP * 0.9)) p[1] += STACK_STEP;
+    return { position: p, rotation: t.rotation };
+  }
+
+  private changed(): void {
+    try { this.deps.onChange?.(this.list()); } catch (e) { this.deps.log('warn', `one-off agents: onChange failed: ${(e as Error).message}`); }
+  }
+
+  /** Mark an agent done (it stays visible for lingerMs) and tell clients. */
+  private settle(a: Agent, state: 'idle' | 'error', detail: string): void {
+    a.child = null;
+    a.status = { ...a.status, state, detail, done: true };
+    this.changed();
+    const t = setTimeout(() => {
+      if (this.agents.get(a.id) === a) { this.agents.delete(a.id); this.changed(); }
+    }, this.lingerMs);
+    t.unref?.();
+  }
+
+  private finish(a: Agent, code: number | null, res: StreamResult | null, err: string, spawnError?: Error): void {
+    const durationMs = this.now() - a.status.since;
+    const secs = `${Math.round(durationMs / 1000)}s`;
+    const base = { id: a.id, phase: 'end', text: a.status.text, durationMs, exitCode: code };
+    let why: string | null = null;
     if (spawnError) {
-      const missing = (spawnError as NodeJS.ErrnoException).code === 'ENOENT';
-      this.fail(r.id, r.text, missing ? `'${this.bin}' (Claude Code CLI) is not on the server's PATH (set EVOL_CLAUDE_BIN)` : spawnError.message, base);
-      return;
+      why = (spawnError as NodeJS.ErrnoException).code === 'ENOENT'
+        ? `'${this.bin}' (Claude Code CLI) is not on the server's PATH (set EVOL_CLAUDE_BIN)`
+        : spawnError.message;
+    } else if (a.timedOut) {
+      why = `timed out after ${Math.round(this.timeoutMs / 60_000)} min and was stopped`;
     }
-    if (r.timedOut) {
-      this.fail(r.id, r.text, `timed out after ${Math.round(this.timeoutMs / 60_000)} min and was stopped`, base);
-      return;
-    }
-    let res: { is_error?: boolean; result?: string; subtype?: string; total_cost_usd?: number; num_turns?: number } | null = null;
-    try { res = JSON.parse(out.trim()); } catch { /* not JSON: report stderr below */ }
     const result = typeof res?.result === 'string' ? res.result.trim() : '';
-    if (!res || res.is_error || code !== 0) {
-      const why = result || res?.subtype || err.trim().split('\n').slice(-3).join(' ') || `exit code ${code}`;
-      this.fail(r.id, r.text, why, { ...base, ...(res?.total_cost_usd !== undefined ? { costUsd: res.total_cost_usd } : {}) });
+    if (!why && (!res || res.is_error || code !== 0)) {
+      why = result || res?.subtype || err.trim().split('\n').slice(-3).join(' ') || `exit code ${code}`;
+    }
+    if (why) {
+      this.fail(a.id, a.status.text, why, { ...base, ...(res?.total_cost_usd !== undefined ? { costUsd: res.total_cost_usd } : {}) });
+      this.settle(a, 'error', `Failed after ${secs}`);
       return;
     }
-    this.deps.log('info', `one-off agent #${r.id} done in ${(durationMs / 1000).toFixed(1)} s (${res.num_turns ?? '?'} turns, $${res.total_cost_usd?.toFixed(3) ?? '?'})`);
-    this.deps.event('agent.oneshot', { ...base, ok: true, result, ...(res.total_cost_usd !== undefined ? { costUsd: res.total_cost_usd } : {}), ...(res.num_turns !== undefined ? { turns: res.num_turns } : {}) });
+    this.deps.log('info', `one-off agent #${a.id} done in ${(durationMs / 1000).toFixed(1)} s (${res!.num_turns ?? '?'} turns, $${res!.total_cost_usd?.toFixed(3) ?? '?'})`);
+    this.deps.event('agent.oneshot', { ...base, ok: true, result, ...(res!.total_cost_usd !== undefined ? { costUsd: res!.total_cost_usd } : {}), ...(res!.num_turns !== undefined ? { turns: res!.num_turns } : {}) });
     this.deps.say(result || 'One-off agent finished.', 'reply');
+    this.settle(a, 'idle', `Done in ${secs}`);
   }
 
   private fail(id: number, text: string, why: string, base: Record<string, unknown> = { id, phase: 'end', text }): void {

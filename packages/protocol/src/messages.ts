@@ -26,6 +26,27 @@ export interface AgentStatus {
   since: number;
 }
 
+/**
+ * A one-off agent (one-off push-to-talk key → headless `claude -p`, apps/server/src/oneshot.ts).
+ * Clients show it as a small orb floating where it was invoked; finished agents linger
+ * briefly with `done` before they drop out of the list.
+ */
+export interface OneshotAgentStatus {
+  id: number;
+  /** The request. */
+  text: string;
+  /** thinking | working while it runs; idle (finished) or error once done. */
+  state: AgentState;
+  /** Current activity ("Editing clock/widget.ts") or the outcome. */
+  detail?: string;
+  /** Start time (epoch ms): the orb's timer counts from here. */
+  since: number;
+  /** Where it floats (space coords): in front of where the user was when they invoked it, facing them. */
+  position: Vec3;
+  rotation: Quat;
+  done?: boolean;
+}
+
 export interface AgentMessage {
   id: string;
   text: string;
@@ -65,6 +86,8 @@ export type ServerMessage =
   | { type: 'channel.value'; channel: string; value: ChannelValue; seq: number }
   | { type: 'agent.status'; status: AgentStatus }
   | { type: 'agent.message'; message: AgentMessage }
+  /** Every live (or just-finished) one-off agent; sent whole on each change and on hello. */
+  | { type: 'agent.oneshots'; agents: OneshotAgentStatus[] }
   /** Ask the xr client to record a pose: show a countdown, sample features for `seconds`, reply with pose.recording. */
   | { type: 'pose.record'; requestId: string; name: string; hand: Handedness | 'either'; seconds: number; countdown: number }
   /** Generic command for clients, e.g. { name: 'session.mode', args: { mode: 'ar' } }, 'reload', 'select'. */

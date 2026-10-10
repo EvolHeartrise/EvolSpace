@@ -266,6 +266,7 @@ export class SpaceRuntime {
       }),
       n.on('agent.status', (m) => this.system.setAgentStatus(m.status)),
       n.on('agent.message', (m) => this.system.addMessage(m.message)),
+      n.on('agent.oneshots', (m) => this.system.setOneshots(m.agents)),
       n.on('voice.result', (m) => this.system.voiceResult(m)),
       n.on('pose.record', (m) => {
         if (!this.isMirror) this.system.recording.start(m);

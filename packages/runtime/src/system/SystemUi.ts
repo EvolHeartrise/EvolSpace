@@ -3,14 +3,17 @@
 // frames under the space root:
 //   HUD frame   — orb (lower-left of view), voice meter, toasts (top), countdown (center)
 //   panel frame — the agent message panel (right of view)
+// One-off agent orbs are the exception: they stay fixed in space where each agent
+// was invoked (OneshotOrbs).
 // The SystemUi is pure presentation; SpaceRuntime routes net messages into it.
 
 import * as THREE from 'three';
-import type { AgentMessage, AgentStatus, ServerMessage } from '@evolspace/protocol';
+import type { AgentMessage, AgentStatus, OneshotAgentStatus, ServerMessage } from '@evolspace/protocol';
 import type { RuntimeUiKit } from '../ui/UiKit.ts';
 import { LazyFollower } from '../scene/anchors.ts';
 import { AgentOrb } from './AgentOrb.ts';
 import { AgentPanel } from './AgentPanel.ts';
+import { OneshotOrbs } from './OneshotOrbs.ts';
 import { RecordingUi } from './RecordingUi.ts';
 import { Toasts, type ToastKind } from './Toasts.ts';
 import { VoiceHud } from './VoiceHud.ts';
@@ -39,6 +42,7 @@ export class SystemUi {
   readonly voice: VoiceHud;
   readonly toasts: Toasts;
   readonly recording: RecordingUi;
+  readonly oneshots: OneshotOrbs;
   autoOpenPanel: boolean;
 
   private hud = new LazyFollower({ angleDeg: 38, maxDrift: 0.3 });
@@ -57,6 +61,7 @@ export class SystemUi {
     this.toasts = new Toasts(ui);
     this.recording = new RecordingUi(ui);
     this.panel = new AgentPanel(ui);
+    this.oneshots = new OneshotOrbs(ui);
 
     place(this.orb.group, ORB_POS);
     place(this.voice.group, VOICE_POS);
@@ -68,7 +73,7 @@ export class SystemUi {
     this.panelFollow.frame.name = 'system-panel';
     this.hud.frame.add(this.orb.group, this.voice.group, this.toasts.group, this.recording.group);
     this.panelFollow.frame.add(this.panel.group);
-    this.group.add(this.hud.frame, this.panelFollow.frame);
+    this.group.add(this.hud.frame, this.panelFollow.frame, this.oneshots.group);
     this.group.visible = this.enabled;
   }
 
@@ -93,6 +98,11 @@ export class SystemUi {
     if (!this.connected) this.orb.set('offline', 'Reconnecting to the EvolSpace server…');
     else if (this.voice.active) this.orb.set('listening', 'Release to send');
     else this.orb.setStatus(this.serverStatus);
+  }
+
+  /** The server's full list of one-off agents (ServerMessage 'agent.oneshots'). */
+  setOneshots(agents: OneshotAgentStatus[]): void {
+    this.oneshots.set(agents);
   }
 
   addMessage(m: AgentMessage): void {
@@ -166,6 +176,7 @@ export class SystemUi {
     this.toasts.update(dt);
     this.recording.update(dt);
     this.panel.update();
+    this.oneshots.update(dt);
     if (!this.enabled) return;
     this.hud.update(headPos, headQuat, ORB_POS, dt);
     if (this.panel.visible) this.panelFollow.update(headPos, headQuat, PANEL_POS, dt);
@@ -177,6 +188,7 @@ export class SystemUi {
     this.toasts.dispose();
     this.recording.dispose();
     this.panel.dispose();
+    this.oneshots.dispose();
     this.group.removeFromParent();
   }
 }

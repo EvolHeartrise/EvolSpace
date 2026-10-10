@@ -91,6 +91,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
       c.send({ type: 'gestures.defs', poses: g.poses, interactions: g.interactions });
       c.send({ type: 'agent.status', status: agent.status });
       for (const message of agent.recent().slice(-20)) c.send({ type: 'agent.message', message });
+      c.send({ type: 'agent.oneshots', agents: oneshot.list() });
       if (UserPoseFeed.wants(c) && user.latest) c.send({ type: 'user.pose', pose: user.latest });
       event('client.connect', { clientId: c.id, role: c.role, primary: c.primary, ...(c.userAgent ? { userAgent: c.userAgent } : {}) });
     },
@@ -228,6 +229,7 @@ export async function startApp(config: ServerConfig, ov: AppOverrides = {}): Pro
     say: (text, kind) => { agent.say(text, kind); },
     event,
     log: (level, message) => log.child('oneshot')[level](message),
+    onChange: (agents) => broadcast({ type: 'agent.oneshots', agents }),
   });
 
   const applyOps = (ops: SceneOp[], source: OpSource | string, group?: string) => store.apply(ops, { source, group });

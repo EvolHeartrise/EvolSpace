@@ -170,6 +170,13 @@ describe('runtime ↔ system UI wiring', () => {
     rt.registerLocalCommand('session.mode', fn);
     ws.serverSend({ type: 'command', name: 'session.mode', args: { mode: 'ar' } });
     expect(fn).toHaveBeenCalledWith({ mode: 'ar' }, 'start');
+    const agent = { id: 7, text: 'make a clock', state: 'working' as const, detail: 'Editing clock', since: Date.now(), position: [1, 1.4, -0.7] as [number, number, number], rotation: [0, 0, 0, 1] as [number, number, number, number] };
+    ws.serverSend({ type: 'agent.oneshots', agents: [agent] });
+    const orb = rt.system.oneshots.orb(7)!;
+    expect(orb.current).toBe('working');
+    expect(orb.group.position.toArray()).toEqual([1, 1.4, -0.7]); // fixed in space, not head-following
+    ws.serverSend({ type: 'agent.oneshots', agents: [] });
+    expect(rt.system.oneshots.count).toBe(0);
     ws.drop();
     expect(rt.system.orb.current).toBe('offline');
   });
