@@ -5,8 +5,10 @@
 //     (each widget uses its own, e.g. files.view.<entityId>).
 //   reply (list)    = {kind: 'list', path, display, parent, entries: [{name, type: dir|file|link, size, mtime, ext}],
 //                      truncated, error?, nonce}
-//   reply (preview) = {kind: 'preview', path, name, size, mtime, type: 'text'|'image'|'binary'|'denied'|'error',
-//                      text?, lines?, truncated?, src? ('/media/preview-….jpg'), error?, nonce}
+//   reply (preview) = {kind: 'preview', path, name, size, mtime, type: 'text'|'image'|'video'|'binary'|'denied'|'error',
+//                      text?, lines?, truncated?, src? ('/media/…'), converting?, error?, nonce}
+//     video: mp4/m4v/webm play directly (symlink in data/media); mov/mkv/avi/… are converted once to MP4 —
+//     the first reply has converting: true and no src, a second reply with src follows on the same channel.
 //   {cmd: 'tree', path, depth? (1–3, default 2), hidden?, reply, nonce}
 //     → {kind: 'tree', path, display, root: Node, partial, error?, nonce}
 //       Node = {name, path, type: dir|file, size (bytes, recursive for dirs), files (count), mtime, ext, children?: Node[]}
@@ -59,6 +61,11 @@ const TEXT_EXT = new Set(['txt', 'md', 'markdown', 'rst', 'log', 'csv', 'tsv', '
   'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'rs', 'go', 'c', 'h', 'cpp', 'hpp', 'cc', 'java', 'kt', 'cs', 'rb', 'php', 'lua', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'sql',
   'svelte', 'vue', 'gd', 'glsl', 'wgsl', 'hlsl', 'cu', 'cuh', 'tex', 'bib', 'r', 'jl', 'swift', 'dart', 'gradle', 'cmake', 'mk', 'dockerfile', 'gitignore', 'env', 'lock']);
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'svg', 'avif', 'heic']);
+/** Videos the headset browser plays as they are (served through a symlink in data/media). */
+const VIDEO_DIRECT = new Set(['mp4', 'm4v', 'webm']);
+/** Videos converted once to H.264/AAC MP4 (cached in data/media) before they can play. */
+const VIDEO_CONVERT = new Set(['mov', 'mkv', 'avi', 'wmv', 'flv', 'mpg', 'mpeg', 'ts', 'm2ts', '3gp', 'ogv']);
+const converting = new Map(); // output file → Promise
 const extOf = (name) => { const i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; };
 
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
@@ -96,7 +103,43 @@ function ffmpegThumb(src, dst) {
   });
 }
 
-export async function preview(p) {
+/**
+ * Video previews: direct formats get a symlink in data/media (instant); others are converted once with
+ * ffmpeg (≤1280 px, H.264 + AAC, faststart) — the first reply says {converting: true} and, if `onLater`
+ * is given, a second reply with `src` follows when the conversion is done.
+ */
+async function videoPreview(abs, st, ext, meta, onLater) {
+  fs.mkdirSync(MEDIA, { recursive: true });
+  const key = createHash('sha1').update(`${abs}:${st.mtimeMs}:${st.size}`).digest('hex').slice(0, 16);
+  if (VIDEO_DIRECT.has(ext)) {
+    const link = path.join(MEDIA, `file-${key}.${ext}`);
+    try { if (!fs.existsSync(link)) fs.symlinkSync(abs, link); } catch (e) { return { ...meta, type: 'error', error: `Can't serve this video: ${e.message}` }; }
+    return { ...meta, type: 'video', src: `/media/${path.basename(link)}` };
+  }
+  const out = path.join(MEDIA, `video-${key}.mp4`);
+  if (fs.existsSync(out)) return { ...meta, type: 'video', src: `/media/${path.basename(out)}` };
+  if (!converting.has(out)) {
+    const tmp = `${out}.part.mp4`;
+    converting.set(out, new Promise((resolve, reject) => {
+      const p = spawn('ffmpeg', ['-loglevel', 'error', '-y', '-i', abs, '-vf', "scale='min(1280,iw)':-2", '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', tmp], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let err = '';
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('error', reject);
+      p.on('close', (c) => {
+        if (c === 0) { fs.renameSync(tmp, out); resolve(); }
+        else { fs.rmSync(tmp, { force: true }); reject(new Error(err.trim().split('\n').pop() || `ffmpeg exited ${c}`)); }
+      });
+    }).finally(() => converting.delete(out)));
+  }
+  converting.get(out).then(
+    () => onLater?.({ ...meta, type: 'video', src: `/media/${path.basename(out)}` }),
+    (e) => onLater?.({ ...meta, type: 'error', error: `Can't convert this video: ${String(e.message).slice(0, 120)}` }),
+  );
+  return { ...meta, type: 'video', converting: true };
+}
+
+export async function preview(p, onLater = null) {
   const abs = resolvePath(p);
   const name = path.basename(abs);
   const base = { kind: 'preview', path: abs, name };
@@ -106,6 +149,7 @@ export async function preview(p) {
   const meta = { ...base, size: st.size, mtime: Math.round(st.mtimeMs) };
   if (!st.isFile()) return { ...meta, type: 'error', error: 'Not a file' };
   const ext = extOf(name);
+  if (VIDEO_DIRECT.has(ext) || VIDEO_CONVERT.has(ext)) return videoPreview(abs, st, ext, meta, onLater);
   if (IMAGE_EXT.has(ext)) {
     try {
       fs.mkdirSync(MEDIA, { recursive: true });
@@ -278,7 +322,8 @@ async function publish(channel, value) {
 
 async function handle(req) {
   if (!req || typeof req !== 'object' || typeof req.reply !== 'string' || !req.reply.startsWith(`${P}.`)) return;
-  const out = req.cmd === 'preview' ? await preview(req.path)
+  const later = (v) => publish(req.reply, { ...v, nonce: req.nonce ?? null });
+  const out = req.cmd === 'preview' ? await preview(req.path, later)
     : req.cmd === 'tree' ? await tree(req.path, req.depth, !!req.hidden)
       : req.cmd === 'search' ? await search(req.path, req.query, req.limit, !!req.hidden)
         : await list(req.path, !!req.hidden);
