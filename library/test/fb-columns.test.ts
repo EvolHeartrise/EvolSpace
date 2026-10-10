@@ -233,3 +233,24 @@ it('screenshots (mirror) never persist navigation', async () => {
   expect(h.rec.setProps).toEqual([]);
   h.dispose();
 });
+
+it("video previews: converting notice, then the converted file (another client's reply counts too)", async () => {
+  const h = await mount(fbColumns, { path: '~/git projects/EvolSpace' });
+  serve(h);
+  h.input('preview', '~/videos/clip.mov');
+  const vr = lastReq(h, 'preview');
+  const path = `${HOME}/videos/clip.mov`;
+  h.publish(vr.reply, { kind: 'preview', path, name: 'clip.mov', size: 1e6, type: 'video', converting: true, nonce: vr.nonce });
+  h.frame(5);
+  expect(h.hasText('Converting this video for the headset…')).toBe(true);
+  // the follow-up arrives with another client's nonce: still ours (same file)
+  h.publish(vr.reply, { kind: 'preview', path, name: 'clip.mov', size: 1e6, type: 'video', src: '/media/video-x.mp4', nonce: 12345 });
+  h.frame(5);
+  expect(h.hasText('Converting this video for the headset…')).toBe(false);
+  expect(h.hasText('Video plays in the headset / browser')).toBe(true); // no DOM in tests
+  h.press('pv:close', 'drag');
+  h.frame(5);
+  expect(h.rec.errors).toEqual([]);
+  h.dispose();
+  expect(h.rec.afterDispose).toEqual([]);
+});

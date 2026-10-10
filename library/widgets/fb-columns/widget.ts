@@ -27,6 +27,7 @@ import { formatBytes, truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { isTensor } from '../../shared/tensor.ts';
 import { STYLE } from '../../shared/style.ts';
+import { VideoSurface, clockLabel } from '../../shared/video-surface.ts';
 
 interface Props extends Record<string, unknown> {
   path: string;
@@ -40,7 +41,7 @@ interface Props extends Record<string, unknown> {
 
 export interface Entry { name: string; type: 'dir' | 'file' | 'link'; size: number | null; mtime: number | null; ext: string }
 interface Listing { kind: 'list'; path: string; display: string; parent: string | null; entries: Entry[]; truncated: boolean; error?: string; nonce?: number | null }
-interface Preview { kind: 'preview'; path: string; name: string; size?: number; mtime?: number; type: string; text?: string; lines?: number; truncated?: boolean; src?: string; error?: string; nonce?: number | null }
+interface Preview { kind: 'preview'; path: string; name: string; size?: number; mtime?: number; type: string; text?: string; lines?: number; truncated?: boolean; src?: string; converting?: boolean; error?: string; nonce?: number | null }
 
 /** One column of the model: a folder listing plus what is selected in it. */
 interface Col {
@@ -302,7 +303,9 @@ const definition: WidgetDefinition<Props> = {
       if (!v || typeof v !== 'object' || isTensor(v) || Array.isArray(v) || (v as Preview).kind !== 'preview' || !pvWanted) return;
       const p = v as Preview;
       const same = p.path === pvWanted || (pvWanted.startsWith('~/') && typeof p.path === 'string' && p.path.endsWith(pvWanted.slice(1)));
-      if (p.nonce !== pvNonce && !(same && !preview)) return;
+      // any reply for the file we want counts (other clients share the channel; a converted video's
+      // follow-up reply carries the requesting client's nonce)
+      if (!same && p.nonce !== pvNonce) return;
       preview = p;
       textScroll = 0;
       dirty = true;
@@ -351,6 +354,7 @@ const definition: WidgetDefinition<Props> = {
       if (clearSelection && pvWanted && last()?.selected && baseName(pvWanted) === last().selected) last().selected = null;
       pvWanted = '';
       preview = null;
+      vs.unload();
       dirty = true;
     }
 
@@ -466,6 +470,12 @@ const definition: WidgetDefinition<Props> = {
     let pvIcon: THREE.Mesh, pvTitle: Text, pvMeta: Text, pvBody: Text, pvNums: Text, pvMsg: Text, pvImg: THREE.Mesh, pvImgMat: THREE.MeshBasicMaterial;
     let pvHit: THREE.Mesh, pvTrack: THREE.Mesh, pvThumb: THREE.Mesh;
     let imageTex: THREE.Texture | null = null;
+    // video previews: one surface reused per widget; a control strip under the picture
+    const VBAR = 0.042;
+    const vs = new VideoSurface(T, { muted: true, loop: true, onChange: () => { vDirty = true; } });
+    let vDirty = false, vTimer = 0;
+    let pvV: THREE.Group, pvVPlay: THREE.Mesh, pvVMute: THREE.Mesh, pvVTime: Text, pvVTrack: THREE.Mesh, pvVFill: THREE.Mesh;
+    let vSeekW = 0;
     let previewKey = '';
     let hlLines: string[] = [], hlSpans: Span[][] = [], hlLang = '';
     const syntaxInts = Object.fromEntries(Object.entries(SYNTAX_COLORS).map(([k, v]) => [k, hexToInt(v)])) as Record<TokenKind, number>;
@@ -667,7 +677,78 @@ const definition: WidgetDefinition<Props> = {
       pvThumb = plane(theme.textDim, 0.003, 0.02);
       pvThumb.position.set(pvTrack.position.x, 0, STYLE.zOverlay);
       g.add(pvNums, pvBody, pvMsg, pvImg, pvHit, pvTrack, pvThumb);
+
+      // video controls: play/pause · seek bar · time · mute
+      pvV = new T.Group();
+      pvV.visible = false;
+      pvV.position.set(0, -h / 2 + PAD + VBAR / 2, 0);
+      const vb = (id: string, icon: string, x: number) => {
+        const d = 0.034;
+        const p = ctx.ui.panel(d, d, { color: theme.surface, radius: d / 2 });
+        p.position.set(x, 0, STYLE.zContent);
+        p.raycast = () => {};
+        const ic = makeIcon(ctx, icon, { size: d * 0.5, color: theme.text });
+        ic.position.set(x, 0, STYLE.zText);
+        const hit = hitBox(d + 0.006, d + 0.006, `pv:${id}`);
+        hit.position.set(x, 0, 0.007); // in front of the body's hit box
+        pvV.add(p, ic, hit);
+        return ic;
+      };
+      pvVPlay = vb('vplay', 'play', x0 + 0.017);
+      pvVMute = vb('vmute', 'volume-x', x1 - 0.017);
+      pvVTime = makeText(ctx, '', { size: META, color: theme.textDim, anchorX: 'right', anchorY: 'middle', font: 'mono' });
+      pvVTime.position.set(x1 - 0.042, 0, STYLE.zText);
+      const sx0 = x0 + 0.042, sx1 = x1 - 0.13;
+      vSeekW = sx1 - sx0;
+      pvVTrack = plane(theme.border, vSeekW, 0.006);
+      pvVTrack.position.set((sx0 + sx1) / 2, 0, STYLE.zContent);
+      pvVFill = plane(theme.accent, vSeekW, 0.006);
+      pvVFill.position.set(sx0, 0, STYLE.zOverlay);
+      const seekHit = hitBox(vSeekW + 0.01, 0.03, 'pv:vseek');
+      seekHit.position.set((sx0 + sx1) / 2, 0, 0.007);
+      pvV.add(pvVTime, pvVTrack, pvVFill, seekHit);
+      g.add(pvV);
     }
+
+    /** Picture area for images and video (video leaves room for its control strip). */
+    function fitMedia(aspect: number, video: boolean): void {
+      const top = H() / 2 - PAD - HEAD - 0.004;
+      const bottom = -H() / 2 + PAD + (video ? VBAR + 0.008 : 0.006);
+      const bw = PREV_W - 2 * PAD, bh = top - bottom;
+      const sw = aspect > bw / bh ? bw : bh * aspect, sh = aspect > bw / bh ? bw / aspect : bh;
+      pvImg.scale.set(sw, sh, 1);
+      pvImg.position.y = (top + bottom) / 2;
+    }
+
+    function renderVideoControls(): void {
+      if (!pvV?.visible) return;
+      setIcon(T, pvVPlay, vs.paused ? 'play' : 'pause');
+      setIcon(T, pvVMute, vs.muted ? 'volume-x' : 'volume-2');
+      const d = vs.duration, t = vs.time;
+      pvVTime.set(`${clockLabel(t)} / ${clockLabel(d)}`);
+      const u = d > 0 ? Math.min(1, t / d) : 0;
+      pvVFill.visible = u > 0;
+      pvVFill.scale.x = Math.max(0.0005, vSeekW * u);
+      pvVFill.position.x = pvVTrack.position.x - vSeekW / 2 + (vSeekW * u) / 2;
+      if (vs.ready && pvImgMat.map !== vs.texture && vs.texture) {
+        fitMedia(vs.aspect, true);
+        pvImgMat.map = vs.texture;
+        pvImgMat.needsUpdate = true;
+        pvImg.visible = true;
+        pvMsg.visible = false;
+      } else if (vs.ready) fitMedia(vs.aspect, true);
+      if (vs.error) { pvMsg.set(`Can't play this video: ${vs.error}`); pvMsg.visible = true; }
+    }
+
+    function seekFromX(x: number): void {
+      // x in ctx.root space → the preview group's frame (it's placed on the arc)
+      v3.set(x, 0, 0);
+      pv.worldToLocal(ctx.root.localToWorld(v3));
+      const local = v3.x - pvV.position.x;
+      const u = (local - (pvVTrack.position.x - vSeekW / 2)) / vSeekW;
+      vs.seek(Math.min(1, Math.max(0, u)) * vs.duration);
+    }
+    const v3 = new T.Vector3();
 
     const pvLines = () => Math.max(4, Math.floor((H() - 2 * PAD - HEAD - 0.008) / (CODE * CODE_LH)));
 
@@ -793,6 +874,9 @@ const definition: WidgetDefinition<Props> = {
         pvImgMat.map = null;
         pvImgMat.needsUpdate = true;
         pvImg.visible = false;
+        const isVideo = preview?.type === 'video';
+        pvV.visible = isVideo && !!preview?.src && vs.available;
+        if (!isVideo || !preview?.src) vs.unload();
         const name = preview?.name ?? baseName(pvWanted);
         const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
         const [icon, color] = iconFor({ type: 'file', ext });
@@ -809,11 +893,13 @@ const definition: WidgetDefinition<Props> = {
           hlLang = lang?.id ?? '';
         } else { hlLines = []; hlSpans = []; hlLang = ''; }
         const msg = !p ? 'Loading…' : p.type === 'text' ? '' : p.type === 'binary' ? 'Binary file: no preview'
+          : p.type === 'video' ? (p.converting ? 'Converting this video for the headset…' : !vs.available ? 'Video plays in the headset / browser' : p.src ? 'Loading video…' : (p.error ?? 'No preview'))
           : p.type === 'denied' ? (p.error ?? 'Private file') : p.type === 'image' ? (p.src && typeof document !== 'undefined' ? '' : 'Image preview appears in the headset')
             : (p.error ?? 'No preview');
         pvMsg.set(msg);
         pvMsg.visible = !!msg;
         if (p?.type === 'image' && p.src && typeof document !== 'undefined') loadImage(p.src);
+        if (p?.type === 'video' && p.src && vs.available) { vs.load(p.src); vDirty = true; }
       }
       const isText = preview?.type === 'text';
       pvBody.visible = pvNums.visible = isText;
@@ -838,14 +924,11 @@ const definition: WidgetDefinition<Props> = {
     }
 
     function loadImage(src: string): void {
-      const bodyH = H() - 2 * PAD - HEAD - 0.01, bw = PREV_W - 2 * PAD;
       const tex = new T.TextureLoader().load(src, (t) => {
         if (imageTex !== t) return;
         t.colorSpace = T.SRGBColorSpace;
         const im = t.image as { width: number; height: number };
-        const a = im.width / Math.max(1, im.height);
-        const sw = a > bw / bodyH ? bw : bodyH * a, sh = a > bw / bodyH ? bw / a : bodyH;
-        pvImg.scale.set(sw, sh, 1);
+        fitMedia(im.width / Math.max(1, im.height), false);
         pvImgMat.map = t;
         pvImgMat.needsUpdate = true;
         pvImg.visible = true;
@@ -918,7 +1001,9 @@ const definition: WidgetDefinition<Props> = {
       else if (part.startsWith('rail:crumb:')) {
         const ci = crumbMap[Number(part.slice(11))];
         if (ci !== undefined) goTo(ci);
-      } else if (part === 'pv:close') { closePreview(); persist(); }
+      } else if (part === 'pv:vplay' || (part === 'pv:text' && preview?.type === 'video')) vs.toggle();
+      else if (part === 'pv:vmute') vs.setMuted(!vs.muted);
+      else if (part === 'pv:close') { closePreview(); persist(); }
       else if (part === 'pv:ask' && pvWanted) ctx.askAgent(`Take a look at this file and tell me about it: ${preview?.path ?? pvWanted}`);
     }
 
@@ -978,6 +1063,7 @@ const definition: WidgetDefinition<Props> = {
           if (press || !part) return;
           const col = colOfPart(part);
           press = { hand: e.hand, part, x0: x, y0: y, scroll0: part === 'pv:text' ? textScroll : col?.scroll ?? 0, mode: 'none', col };
+          if (part === 'pv:vseek') seekFromX(x);
           setHover(part);
           if (hover) hover.material = activeMat;
           return;
@@ -985,6 +1071,7 @@ const definition: WidgetDefinition<Props> = {
         if (!press || e.hand !== press.hand) return;
         if (e.phase === 'move') {
           const dx = x - press.x0, dy = y - press.y0;
+          if (press.part === 'pv:vseek') { seekFromX(x); return; }
           if (press.mode === 'none' && Math.hypot(dx, dy) > TAP) {
             press.mode = Math.abs(dx) > Math.abs(dy) ? 'swipe' : 'scroll';
             if (hover) hover.material = hoverMat;
@@ -1007,6 +1094,7 @@ const definition: WidgetDefinition<Props> = {
         press = null;
         if (hover) hover.material = hoverMat;
         if (e.phase !== 'end') return; // cancelled: never act
+        if (p.part === 'pv:vseek') return;
         if (p.mode === 'none') tap(p.part);
         else if (p.mode === 'swipe') {
           const dx = x - p.x0, dy = y - p.y0;
@@ -1014,6 +1102,8 @@ const definition: WidgetDefinition<Props> = {
         }
       },
       update(dt) {
+        vTimer += dt || 0;
+        if (pvV?.visible && (vDirty || vTimer > 0.25)) { vDirty = false; vTimer = 0; renderVideoControls(); }
         const wasDirty = dirty;
         if (dirty) { dirty = false; render(); }
         const shT = firstVisible();
@@ -1032,6 +1122,7 @@ const definition: WidgetDefinition<Props> = {
         subs.clear();
         pvOff?.();
         imageTex?.dispose();
+        vs.dispose();
         if (arc) disposeTree(arc);
       },
     };
