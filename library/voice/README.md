@@ -61,6 +61,7 @@ or adds detail ("delete all the spheres", "make this red"), leave it to Claude.
   |---|---|
   | `$target` | The entity the user means by "this/that". Resolved in order: right-hand ray focus, left-hand ray focus, selection, gaze, all captured when push-to-talk started. |
   | `$focus` / `$selected` / `$gaze` | The individual context entities. |
+  | `$head` | The speaking client's head pose `{position, rotation}` at push-to-talk start (headset or desktop camera). Whole value only; omitted when unknown. |
   | `$<group>` | A named regex group. If an optional group did not match, its key is **omitted**. |
   | `$text` / `$transcript` | The normalized utterance / the raw transcript. |
   | `$x:number` / `$x:int` | Converted to a number. Accepts digits and spoken numbers ("twenty one"). |

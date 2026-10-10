@@ -189,12 +189,20 @@ export function resolveWidgetName(spoken: string, ids: readonly string[]): strin
 /** "line-plot" → "Line Plot". */
 const titleCase = (id: string) => id.split(/[-_]+/).filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join(' ');
 
+const finite = (v: unknown, n: number): boolean => Array.isArray(v) && v.length === n && v.every(Number.isFinite);
+
+/** A {position, rotation} head pose, or null. */
+export function headPose(v: unknown): { position: Vec3; rotation: Quat } | null {
+  const h = v as { position?: unknown; rotation?: unknown } | null;
+  return h && typeof h === 'object' && finite(h.position, 3) && finite(h.rotation, 4) ? { position: h.position as Vec3, rotation: h.rotation as Quat } : null;
+}
+
 /**
- * Root transform for new content in front of the user (same rule as the MCP spawn tool): further away
- * for bigger widgets, a little below eye height, turned to face them. No headset: in front of the origin.
+ * Root transform for new content straight in front of the user: at arm's length (a little further for
+ * big widgets, at most 1.6 m), a little below eye height, turned to face them. No pose: in front of the origin.
  */
 export function placeInFront(head: { position: Vec3; rotation: Quat } | null, size?: Vec3): { position: Vec3; rotation: Quat } {
-  const dist = Math.min(3, Math.max(0.8, 0.5 + (size ? Math.max(...size) : 0.3)));
+  const dist = Math.min(1.6, Math.max(0.7, 0.4 + 0.6 * (size ? Math.max(...size) : 0.3)));
   if (!head) return { position: [0, 1.3, -dist], rotation: [0, 0, 0, 1] };
   const f = rotateVec(head.rotation, [0, 0, -1]);
   let fx = f[0], fz = f[2];
@@ -224,8 +232,8 @@ export function registerBuiltinCommands(reg: CommandRegistry, d: BuiltinDeps): v
     },
   });
   reg.register('spawn', {
-    description: 'Add a widget in front of the user. `widget` may be a spoken name ("line plot" → line-plot); declines (voice: goes to Claude) when it names no widget.',
-    args: '{widget: string, name?: string, props?: object}',
+    description: 'Add a widget straight in front of the user (of `head`, else the headset). `widget` may be a spoken name ("line plot" → line-plot); declines (voice: goes to Claude) when it names no widget.',
+    args: '{widget: string, name?: string, props?: object, head?: {position, rotation}}',
     run: (args, ctx) => {
       const spoken = stringArg(args, 'widget');
       const catalog = d.widgets();
@@ -236,7 +244,7 @@ export function registerBuiltinCommands(reg: CommandRegistry, d: BuiltinDeps): v
         widget: id,
         name: typeof args.name === 'string' && args.name ? args.name : titleCase(id),
         props: args.props && typeof args.props === 'object' ? (args.props as Record<string, unknown>) : {},
-        transform: { ...placeInFront(d.head(), w?.size), scale: [1, 1, 1] },
+        transform: { ...placeInFront(headPose(args.head) ?? d.head(), w?.size), scale: [1, 1, 1] },
       };
       const { ids } = d.applyOps([{ op: 'add', entity: entity as Entity }], opSourceFor(ctx.origin));
       return { entity: ids[0], widget: id };

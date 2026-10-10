@@ -148,6 +148,14 @@ describe('library/voice/commands.json', () => {
     const p = matchCommand('Save the workspace', parsed.commands)!;
     expect(substituteArgs(p.command.def.args, { groups: p.groups, entities: {}, text: p.text, transcript: '' })).toEqual({});
   });
+
+  it("spawn passes the widget name and the speaker's head pose ($head, omitted when unknown)", () => {
+    const m = matchCommand('Spawn a line plot', parsed.commands)!;
+    expect(m.command.def.id).toBe('spawn-widget');
+    const head = { position: [0, 1.6, 0], rotation: [0, 0, 0, 1] };
+    expect(substituteArgs(m.command.def.args, { groups: m.groups, entities: {}, text: m.text, transcript: '', head })).toEqual({ widget: 'line plot', head });
+    expect(substituteArgs(m.command.def.args, { groups: m.groups, entities: {}, text: m.text, transcript: '' })).toEqual({ widget: 'line plot' });
+  });
 });
 
 describe('library/voice/commands.json: video + github fast paths', () => {
