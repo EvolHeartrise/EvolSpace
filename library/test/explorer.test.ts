@@ -1,6 +1,6 @@
 // explorer — Miller columns on an arc: chain restore, one pinch per level, scrolling, back (button,
 // swipe, header, crumbs), previews, persistence, commands.
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import explorer, { age, arcPlace, baseName, chainFor, findEntry, iconFor, joinPath, metaLabel, type Entry } from '../widgets/explorer/widget.ts';
 import { mount, type Harness } from './harness.ts';
 
@@ -160,6 +160,54 @@ it('scrolls with pinch-drag (no tap), ignores cancelled presses', async () => {
   h.interact({ handler: 'drag', phase: 'cancel', objectName: `row:${v}:0`, localPoint: h.partPosition(`row:${v}:0`) });
   expect(requests(h).length).toBe(before);
   h.dispose();
+});
+
+it('scrolls smoothly: rows follow the hand to fractional offsets (edges clipped) and glide on after a flick', async () => {
+  vi.useFakeTimers({ toFake: ['performance'] });
+  try {
+    const many = Array.from({ length: 40 }, (_, i) => `f${String(i).padStart(2, '0')}.txt`).join(' ');
+    const h = await mount(explorer, { path: '/data', rows: 8 });
+    for (const r of requests(h)) answer(h, r, r.path === '/data' ? many : 'data/');
+    h.frame(40);
+    const v = h.liveParts().filter((o) => o.name.startsWith('row:') && o.name.endsWith(':7')).map((o) => o.name.split(':')[1])[0];
+    const namesText = () => (h.root.getObjectsByProperty('anchorY', 'top') as unknown as Array<{ text: string; parent: unknown; clipRect: number[] | null }>)
+      .find((t) => t.text?.startsWith('f') && t.parent === h.part(`row:${v}:1`).parent)!;
+    const ROW = 0.036;
+    const p0 = h.partPosition(`row:${v}:2`);
+    const at = (dy: number) => [p0[0], p0[1] + dy, p0[2]] as [number, number, number];
+    // slow drag: past the tap threshold, then 1.5 rows (the threshold itself doesn't move the content)
+    h.interact({ handler: 'drag', phase: 'start', objectName: `row:${v}:2`, localPoint: at(0) });
+    h.interact({ handler: 'drag', phase: 'move', objectName: `row:${v}:2`, localPoint: at(0.02) });
+    vi.advanceTimersByTime(400);
+    h.interact({ handler: 'drag', phase: 'move', objectName: `row:${v}:2`, localPoint: at(0.02 + 1.5 * ROW) });
+    vi.advanceTimersByTime(400);
+    h.interact({ handler: 'drag', phase: 'end', objectName: `row:${v}:2`, localPoint: at(0.02 + 1.5 * ROW) });
+    h.frame();
+    const t = namesText();
+    expect(t.text.split('\n')).toEqual(Array.from({ length: 9 }, (_, i) => `f${String(i + 1).padStart(2, '0')}.txt`)); // f01 half out at the top … f09 half in at the bottom
+    expect(t.clipRect).not.toBeNull(); // clipped to the list area
+    const top = h.part(`row:${v}:0`), bottom = h.part(`row:${v}:8`);
+    expect(top.scale.y).toBeCloseTo(ROW / 2, 4); // the hit boxes cover only the visible halves
+    expect(bottom.scale.y).toBeCloseTo(ROW / 2, 4);
+    h.frame(30);
+    expect(namesText().text.startsWith('f01.txt')).toBe(true); // a slow release doesn't glide
+    // a quick flick: the list keeps moving after release, then settles
+    h.interact({ handler: 'drag', phase: 'start', objectName: `row:${v}:4`, localPoint: at(0) });
+    for (let i = 1; i <= 5; i++) {
+      vi.advanceTimersByTime(16);
+      h.interact({ handler: 'drag', phase: 'move', objectName: `row:${v}:4`, localPoint: at(0.02 + i * ROW) });
+    }
+    h.interact({ handler: 'drag', phase: 'end', objectName: `row:${v}:4`, localPoint: at(0.02 + 5 * ROW) });
+    h.frame();
+    const atRelease = Number(namesText().text.slice(1, 3));
+    h.frame(72);
+    const after = Number(namesText().text.slice(1, 3));
+    expect(after).toBeGreaterThan(atRelease + 3);
+    expect(h.rec.errors).toEqual([]);
+    h.dispose();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it('previews files with syntax highlighting, persists the file, closes, asks Claude', async () => {

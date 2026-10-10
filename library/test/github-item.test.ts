@@ -1,9 +1,9 @@
 // github-item — the GitHub detail card (+ the github source's markdown → panel markup).
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import githubItem, { itemNumber } from '../widgets/github-item/widget.ts';
 // @ts-expect-error plain JS module (the source driver)
 import { toMarkup } from '../sources/github/github.mjs';
-import { mount } from './harness.ts';
+import { mount, type Harness } from './harness.ts';
 
 const detail = (n: number, kind: 'issue' | 'pr', body: string) => ({
   kind, number: n, title: `Title ${n}`, status: kind === 'pr' ? 'merged' : 'open', color: '#3fb950', author: 'me',
@@ -61,4 +61,34 @@ it('shows an item from the details channel, follows the item input, scrolls long
   expect(h.rec.errors).toEqual([]);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
+});
+
+/** A real-time pinch-drag (performance.now advances `ms` per step, so SmoothScroll measures a flick speed). */
+function flick(h: Pick<Harness, 'interact'>, part: string, from: [number, number, number], dy: number, steps = 5, ms = 16): void {
+  let clock = 1000;
+  const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  h.interact({ handler: 'drag', phase: 'start', objectName: part, localPoint: from });
+  let p = from;
+  for (let i = 1; i <= steps; i++) {
+    clock += ms;
+    p = [from[0], from[1] + (dy * i) / steps, from[2]];
+    h.interact({ handler: 'drag', phase: 'move', objectName: part, localPoint: p });
+  }
+  clock += 4;
+  h.interact({ handler: 'drag', phase: 'end', objectName: part, localPoint: p });
+  spy.mockRestore();
+}
+
+it('keeps gliding after a flick on the text', async () => {
+  const h = await mount(githubItem, { number: 62, height: 0.4 });
+  const long = Array.from({ length: 120 }, (_, i) => `- point ${i}`).join('\n');
+  h.publish('github.bsrl.details', { items: { 62: detail(62, 'pr', long) } });
+  h.frame();
+  const shown = () => h.visibleTexts().filter((t) => /^point \d+$/.test(t)).map((t) => Number(t.slice(6)));
+  flick(h, 'body', [0, -0.05, 0.01], 0.05);
+  h.frame();
+  const atRelease = Math.min(...shown());
+  h.frame(30);
+  expect(Math.min(...shown())).toBeGreaterThan(atRelease);
+  h.dispose();
 });

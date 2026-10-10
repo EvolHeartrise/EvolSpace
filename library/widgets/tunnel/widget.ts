@@ -32,6 +32,7 @@ import { formatBytes, truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { isTensor } from '../../shared/tensor.ts';
 import { FittedInstances } from '../../shared/instanced.ts';
+import { SmoothScroll } from '../../shared/scroll.ts';
 import {
   GEO, age, arcCapacity, arcSlots, baseName, clamp, clamp01, coneRadius, easeInOut, easeOut, folderTitle, iconFor,
   joinPath, levels, MAX_TAGS, navKind, normPath, pageCount, ringAlpha, ringPlan, ringZ, rowSpecs, slotPosition,
@@ -534,9 +535,12 @@ const definition: WidgetDefinition<Props> = {
     let pv: {
       path: string; dir: string; base: string; data: Preview | null; e: number; closing: boolean;
       from: { pos: THREE.Vector3; quat: THREE.Quaternion; scale: number };
-      g: THREE.Group; body: Text | null; nums: Text | null; scroll: number; tex: THREE.Texture | null;
+      g: THREE.Group; body: Text | null; nums: Text | null; scroll: SmoothScroll; tex: THREE.Texture | null;
       lines: string[]; spans: Span[][]; lang: string;
+      /** First line currently in the text meshes (-1 = none yet), the text area's top, and the texts' clip rects. */
+      shownFrom: number; bodyTop: number; clipBody: [number, number, number, number]; clipNums: [number, number, number, number];
     } | null = null;
+    const LINE_H = CODE * CODE_LH;
     const syntaxInts = Object.fromEntries(Object.entries(SYNTAX_COLORS).map(([k, v]) => [k, hexToInt(v)])) as Record<TokenKind, number>;
 
     function openPreview(path: string, tile: Tile | null): void {
@@ -548,7 +552,10 @@ const definition: WidgetDefinition<Props> = {
       g.name = 'preview';
       group.add(g);
       const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-      pv = { path, dir: cut > 0 ? normPath(path.slice(0, cut)) : '', base: baseName(path), data: null, e: 0, closing: false, from, g, body: null, nums: null, scroll: 0, tex: null, lines: [], spans: [], lang: '' };
+      pv = {
+        path, dir: cut > 0 ? normPath(path.slice(0, cut)) : '', base: baseName(path), data: null, e: 0, closing: false, from, g, body: null, nums: null,
+        scroll: new SmoothScroll(), tex: null, lines: [], spans: [], lang: '', shownFrom: -1, bodyTop: 0, clipBody: [-10, -1, 10, 0], clipNums: [-10, -1, 10, 0],
+      };
       buildPreview();
       request('preview', path);
       if (path !== ctx.props.file && !ctx.isMirror) ctx.setProps({ file: path });
@@ -621,6 +628,8 @@ const definition: WidgetDefinition<Props> = {
         pv.nums.position.set(x0 + 0.026, bodyTop, 0.003);
         pv.body = makeText(ctx, '', { size: CODE, anchorX: 'left', anchorY: 'top', color: theme.text, font: 'mono', whiteSpace: 'nowrap', lineHeight: CODE_LH });
         pv.body.position.set(x0 + 0.034, bodyTop, 0.003);
+        pv.bodyTop = bodyTop;
+        pv.shownFrom = -1;
         const hit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
         hit.scale.set(PV_W - PV_PAD, bodyH, 0.01);
         hit.position.set(0, bodyTop - bodyH / 2, 0.004);
@@ -655,17 +664,33 @@ const definition: WidgetDefinition<Props> = {
       }
     }
 
+    /**
+     * Smooth scrolling: the texts hold PV_LINES + 1 lines from floor(scroll), shifted up by the
+     * fractional part and clipped (troika clipRect) to the text area. Text content is only rebuilt
+     * when the first line changes; in between just the position + clip move.
+     */
     function renderPreviewText(): void {
       if (!pv || !pv.body || !pv.nums) return;
       const lines = pv.lines;
-      const from = Math.min(Math.max(0, Math.round(pv.scroll)), Math.max(0, lines.length - PV_LINES));
-      pv.scroll = Math.min(pv.scroll, Math.max(0, lines.length - PV_LINES));
-      const shownLines = lines.slice(from, from + PV_LINES);
-      const shown = shownLines.map((l) => (l.length > CODE_COLS ? l.slice(0, CODE_COLS - 1) + '…' : l));
-      pv.body.set(shown.join('\n'));
-      const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
-      setColorRanges(pv.body, pv.lang ? colorRanges(pv.spans.slice(from, from + PV_LINES), shown.map((l) => l.length), syntaxInts, hexToInt(theme.text), clips) : null);
-      pv.nums.set(shownLines.map((_, i) => String(from + i + 1)).join('\n'));
+      pv.scroll.setMax(Math.max(0, lines.length - PV_LINES));
+      const pos = pv.scroll.pos;
+      const from = Math.floor(pos);
+      if (from !== pv.shownFrom) {
+        pv.shownFrom = from;
+        const shownLines = lines.slice(from, from + PV_LINES + 1);
+        const shown = shownLines.map((l) => (l.length > CODE_COLS ? l.slice(0, CODE_COLS - 1) + '…' : l));
+        pv.body.set(shown.join('\n'));
+        const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
+        setColorRanges(pv.body, pv.lang ? colorRanges(pv.spans.slice(from, from + PV_LINES + 1), shown.map((l) => l.length), syntaxInts, hexToInt(theme.text), clips) : null);
+        pv.nums.set(shownLines.map((_, i) => String(from + i + 1)).join('\n'));
+      }
+      // Text tops sit frac lines above the area's top; clip (text-local, y down from 0) to the area.
+      const lift = (pos - from) * LINE_H;
+      pv.body.position.y = pv.nums.position.y = pv.bodyTop + lift;
+      pv.clipBody[1] = pv.clipNums[1] = -lift - PV_LINES * LINE_H;
+      pv.clipBody[3] = pv.clipNums[3] = -lift;
+      (pv.body as unknown as { clipRect: number[] | null }).clipRect = pv.clipBody;
+      (pv.nums as unknown as { clipRect: number[] | null }).clipRect = pv.clipNums;
     }
 
     function onPreview(v: ChannelValue): void {
@@ -676,7 +701,7 @@ const definition: WidgetDefinition<Props> = {
       const ok = p.path === target || (target.startsWith('~') && p.path.endsWith(target.slice(1)));
       if (!ok) return;
       pv.data = p;
-      pv.scroll = 0;
+      pv.scroll = new SmoothScroll();
       buildPreview();
       dirty = true;
     }
@@ -961,7 +986,8 @@ const definition: WidgetDefinition<Props> = {
         if (head) toHead.set(head[0] - hand0.x, head[1] - hand0.y, head[2] - hand0.z);
         if (toHead.lengthSq() < 1e-6) toHead.set(0, 0, 1); else toHead.normalize();
         const t = tileOf(part);
-        press = { hand: e.hand, part, lp0: [lp[0], lp[1], lp[2]], hand0, toHead, mode: '', depth: 0, dx: 0, scroll0: pv?.scroll ?? 0, arc: t ? t.arc : 0 };
+        press = { hand: e.hand, part, lp0: [lp[0], lp[1], lp[2]], hand0, toHead, mode: '', depth: 0, dx: 0, scroll0: pv?.scroll.pos ?? 0, arc: t ? t.arc : 0 };
+        if (part === 'pv:text') pv?.scroll.dragStart(); // a touch stops a glide; a tap leaves it in place
         return;
       }
       if (!press || e.hand !== press.hand) return;
@@ -991,14 +1017,15 @@ const definition: WidgetDefinition<Props> = {
           arcShift[pr.arc] = clamp(dx / rows[0].r, -0.5, 0.5);
           dirty = true;
         } else if (pr.mode === 'scroll' && pv) {
-          pv.scroll = Math.max(0, pr.scroll0 + dy / (CODE * CODE_LH));
-          renderPreviewText();
+          pv.scroll.dragMove(dy / LINE_H); // content follows the hand 1:1
+          if (pv.scroll.step(0)) renderPreviewText();
         }
         return;
       }
       // end / cancel
       press = null;
       const done = e.phase === 'end';
+      if (pr.part === 'pv:text') pv?.scroll.dragEnd(done && pr.mode === 'scroll'); // fling on release
       if (pr.mode === 'depth') {
         if (nav && !nav.committed) {
           if (done && Math.abs(pr.depth) >= PULL) {
@@ -1061,6 +1088,7 @@ const definition: WidgetDefinition<Props> = {
       },
       update(dt) {
         const d = Math.min(0.1, Number.isFinite(dt) ? dt : 0.016);
+        if (pv?.scroll.active && pv.scroll.step(d)) renderPreviewText(); // preview glide
         const active = step(d);
         if (!active && !dirty) return;
         dirty = false;

@@ -1,5 +1,5 @@
 // tunnel — tunnel geometry/layout model and the widget's flights, previews, paging and protocol.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import tunnel from '../widgets/tunnel/widget.ts';
 import {
@@ -252,4 +252,58 @@ it('follows path/file props and inputs, keeps the text budget, survives junk', a
   expect(h.texts.length).toBeLessThanOrEqual(52);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
+});
+
+/** A real-time pinch-drag (performance.now advances `ms` per step, so SmoothScroll measures a flick speed). */
+function flick(h: Pick<Harness, 'interact'>, part: string, from: [number, number, number], dy: number, steps = 5, ms = 16): void {
+  let clock = 1000;
+  const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  h.interact({ handler: 'drag', phase: 'start', objectName: part, localPoint: from });
+  let p = from;
+  for (let i = 1; i <= steps; i++) {
+    clock += ms;
+    p = [from[0], from[1] + (dy * i) / steps, from[2]];
+    h.interact({ handler: 'drag', phase: 'move', objectName: part, localPoint: p });
+  }
+  clock += 4;
+  h.interact({ handler: 'drag', phase: 'end', objectName: part, localPoint: p });
+  spy.mockRestore();
+}
+
+it('preview text scrolls smoothly: fractional line offset clipped to the text area, then glides after a flick', async () => {
+  const h = await opened();
+  h.publish('files.tunnel.test-entity.list', listing('~/proj', [['main.ts', 'file']]));
+  h.frame(40);
+  h.press(`tile:${arcCapacity()}`, 'drag');
+  const text = Array.from({ length: 200 }, (_, i) => `const v${i} = ${i};`).join('\n');
+  h.publish('files.tunnel.test-entity.preview', { kind: 'preview', path: `${HOME}/proj/main.ts`, name: 'main.ts', size: 900, mtime: Date.now(), type: 'text', text, lines: 200 });
+  h.frame(40);
+  const body = () => {
+    let found: THREE.Object3D & { text: string; clipRect?: number[] } | undefined;
+    h.root.traverse((o) => { const t = o as THREE.Object3D & { text?: string }; if (typeof t.text === 'string' && t.text.startsWith('const v')) found = t as typeof found; });
+    return found!;
+  };
+  const top0 = body().position.y;
+  const LH = 0.0112 * 1.3;
+  // a slow drag: content follows the hand exactly (from the press point), no snapping to whole lines
+  const dy = 3.4 * LH;
+  h.drag('pv:text', [0, dy, 0], { steps: 2, end: false });
+  h.frame();
+  expect(body().text.startsWith('const v3 = 3;\n')).toBe(true);
+  expect(body().position.y - top0).toBeCloseTo(0.4 * LH, 4); // lifted by the fractional line
+  expect(body().clipRect![3]).toBeCloseTo(-(body().position.y - top0));
+  h.interact({ handler: 'drag', phase: 'cancel', objectName: 'pv:text', localPoint: [0, 0, 0] });
+  // a flick keeps scrolling after the release, then comes to rest
+  flick(h, 'pv:text', [0, -0.05, 0.004], 0.06);
+  h.frame();
+  const first = () => Number(/^const v(\d+)/.exec(body().text)![1]);
+  const atRelease = first();
+  h.frame(30);
+  const later = first();
+  expect(later).toBeGreaterThan(atRelease);
+  h.frame(200);
+  const rest = first();
+  h.frame(30);
+  expect(first()).toBe(rest);
+  h.dispose();
 });

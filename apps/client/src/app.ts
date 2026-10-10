@@ -123,6 +123,7 @@ export class EvolClient {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.localClippingEnabled = true; // widget scroll areas clip their rows (library/shared/scroll.ts)
     renderer.domElement.id = 'evol-canvas';
     renderer.domElement.tabIndex = 0;
     container.appendChild(renderer.domElement);

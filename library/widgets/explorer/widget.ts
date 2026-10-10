@@ -8,7 +8,8 @@
 // tappable crumbs. Tapping a file opens a preview column at the end (syntax-highlighted text with line
 // numbers, or the image).
 //
-// Expert model: one pinch per level; pinch-drag inside a column scrolls it; a horizontal swipe to the
+// Expert model: one pinch per level; pinch-drag inside a column scrolls it (smoothly: the rows follow the
+// hand and glide on after a flick, shared/scroll.ts); a horizontal swipe to the
 // right (or the big Back button) goes back one level; tapping a column's header — or a highlighted
 // folder, or a crumb — jumps straight back to that level. The path and the previewed file persist in
 // the `path` / `file` props.
@@ -28,6 +29,7 @@ import { dragBinding } from '../../shared/handle.ts';
 import { isTensor } from '../../shared/tensor.ts';
 import { STYLE } from '../../shared/style.ts';
 import { VideoSurface, clockLabel } from '../../shared/video-surface.ts';
+import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   path: string;
@@ -57,7 +59,8 @@ interface Col {
   error: string;
   /** Name of the selected entry (the folder opened to the right, or the previewed file). */
   selected: string | null;
-  scroll: number;
+  /** Scroll position in rows (fractional while gliding). */
+  sc: SmoothScroll;
   nonce: number;
   fresh: boolean;
 }
@@ -120,6 +123,9 @@ export function metaLabel(e: Entry, now = Date.now()): string {
   const size = e.size != null ? formatBytes(e.size) : '';
   return [size, a].filter(Boolean).join(' · ');
 }
+
+/** First whole row/line at a scroll position (tolerant of float noise: 9.9999999 is row 10). */
+const firstOf = (pos: number) => Math.floor(pos + 1e-6);
 
 const sepOf = (p: string) => (p.includes('\\') && !p.includes('/') ? '\\' : '/');
 
@@ -185,6 +191,7 @@ interface ColView {
   title: Text;
   sub: Text;
   underline: THREE.Mesh;
+  /** n + 1 pooled rows (a partly visible one at each edge while scrolling). */
   icons: THREE.Mesh[];
   hits: THREE.Mesh[];
   names: Text;
@@ -193,6 +200,12 @@ interface ColView {
   selMat: THREE.MeshBasicMaterial;
   track: THREE.Mesh;
   thumb: THREE.Mesh;
+  /** Clips the list area (rows sliding in/out at its edges). */
+  vp: ScrollViewport;
+  /** First entry index of the rendered rows (-1 = re-render). */
+  first: number;
+  /** Row of the selected entry in the pool (-1 = none). */
+  selRow: number;
 }
 
 const definition: WidgetDefinition<Props> = {
@@ -238,7 +251,8 @@ const definition: WidgetDefinition<Props> = {
     let preview: Preview | null = null;
     let pvWanted = ''; // requested preview path ('' = none)
     let pvNonce = 0;
-    let textScroll = 0;
+    const pvSc = new SmoothScroll(); // preview text scroll, in lines
+    let pvFrom = -1; // first line of the rendered preview text (-1 = re-render)
     let dirty = true;
     let lastFolder = '';
 
@@ -283,8 +297,9 @@ const definition: WidgetDefinition<Props> = {
       c.parent = l.parent ?? null;
       c.truncated = !!l.truncated;
       c.error = l.error ? String(l.error) : '';
+      const hadEntries = c.fresh;
       c.fresh = true;
-      revealSelected(c);
+      revealSelected(c, hadEntries);
       if (depth === cols.length - 1) persist();
       dirty = true;
     }
@@ -293,7 +308,7 @@ const definition: WidgetDefinition<Props> = {
       pvWanted = p;
       pvNonce = ++nonce;
       preview = null;
-      textScroll = 0;
+      pvSc.scrollTo(0, false);
       if (!pvOff) pvOff = ctx.channels.subscribe(chan('preview'), onPreview);
       ctx.channels.publish(`${prefix()}.request`, { cmd: 'preview', path: p, reply: chan('preview'), nonce: pvNonce } as never);
       dirty = true;
@@ -307,14 +322,14 @@ const definition: WidgetDefinition<Props> = {
       // follow-up reply carries the requesting client's nonce)
       if (!same && p.nonce !== pvNonce) return;
       preview = p;
-      textScroll = 0;
+      pvSc.scrollTo(0, false);
       dirty = true;
     }
 
     // ---- navigation ------------------------------------------------------------------------------
 
     function makeCol(req: string, selected: string | null): Col {
-      return { id: ++colSeq, req, abs: '', display: req, parent: null, entries: null, truncated: false, error: '', selected, scroll: 0, nonce: 0, fresh: false };
+      return { id: ++colSeq, req, abs: '', display: req, parent: null, entries: null, truncated: false, error: '', selected, sc: new SmoothScroll(), nonce: 0, fresh: false };
     }
 
     const last = () => cols[cols.length - 1];
@@ -410,11 +425,14 @@ const definition: WidgetDefinition<Props> = {
       dirty = true;
     }
 
-    function revealSelected(c: Col): void {
+    /** Bring the selected entry into view: glide there on a refresh, jump on a first listing. */
+    function revealSelected(c: Col, animate = false): void {
       if (!c.entries || !c.selected) return;
       const idx = c.entries.findIndex((e) => e.name === c.selected);
       const n = nRows();
-      if (idx >= 0 && (idx < c.scroll || idx >= c.scroll + n)) c.scroll = Math.max(0, Math.min(c.entries.length - n, idx - Math.floor(n / 3)));
+      c.sc.setMax(Math.max(0, c.entries.length - n));
+      const pos = c.sc.pos;
+      if (idx >= 0 && (idx < pos || idx + 1 > pos + n)) c.sc.scrollTo(idx - Math.floor(n / 3), animate);
     }
 
     function command(raw: string): void {
@@ -436,7 +454,10 @@ const definition: WidgetDefinition<Props> = {
         case 'scroll': {
           const n = Number(arg);
           const c = last();
-          if (c?.entries && Number.isFinite(n)) { c.scroll = Math.max(0, Math.min(c.entries.length - nRows(), Math.round(c.scroll) + n)); dirty = true; }
+          if (c?.entries && Number.isFinite(n)) {
+            c.sc.setMax(Math.max(0, c.entries.length - nRows()));
+            c.sc.scrollTo(Math.round(c.sc.pos) + n);
+          }
           break;
         }
         default: if (s) ctx.event('explorer.unknown-command', { command: s });
@@ -457,6 +478,7 @@ const definition: WidgetDefinition<Props> = {
     let hover: THREE.Mesh | null = null;
     let hoverMat: THREE.MeshBasicMaterial, activeMat: THREE.MeshBasicMaterial;
     let hovered = '';
+    let hoverMesh: THREE.Mesh | null = null;
 
     // rail
     let rail: THREE.Group;
@@ -469,6 +491,8 @@ const definition: WidgetDefinition<Props> = {
     let pv: THREE.Group;
     let pvIcon: THREE.Mesh, pvTitle: Text, pvMeta: Text, pvBody: Text, pvNums: Text, pvMsg: Text, pvImg: THREE.Mesh, pvImgMat: THREE.MeshBasicMaterial;
     let pvHit: THREE.Mesh, pvTrack: THREE.Mesh, pvThumb: THREE.Mesh;
+    let pvVp: ScrollViewport;
+    const pvTextTop = () => H() / 2 - PAD - HEAD - 0.004;
     let imageTex: THREE.Texture | null = null;
     // video previews: one surface reused per widget; a control strip under the picture
     const VBAR = 0.042;
@@ -604,7 +628,7 @@ const definition: WidgetDefinition<Props> = {
       sel.visible = false;
       g.add(sel);
       const icons: THREE.Mesh[] = [], hits: THREE.Mesh[] = [];
-      for (let r = 0; r < nRows(); r++) {
+      for (let r = 0; r <= nRows(); r++) {
         const y = listTop - (r + 0.5) * ROW;
         const icon = makeIcon(ctx, 'file', { size: 0.019, color: theme.textDim });
         icon.position.set(x0 + 0.011, y, STYLE.zText);
@@ -627,7 +651,9 @@ const definition: WidgetDefinition<Props> = {
       const thumb = plane(theme.textDim, 0.003, 0.02);
       thumb.position.set(track.position.x, 0, STYLE.zOverlay);
       g.add(names, metas, track, thumb);
-      return { g, col: null, headIcon, title, sub, underline, icons, hits, names, metas, sel, selMat, track, thumb };
+      const vp = new ScrollViewport(T, g, listTop - nRows() * ROW, listTop);
+      for (const o of [...icons, names, metas, sel]) vp.add(o);
+      return { g, col: null, headIcon, title, sub, underline, icons, hits, names, metas, sel, selMat, track, thumb, vp, first: -1, selRow: -1 };
     }
 
     function buildPreview(h: number): void {
@@ -677,6 +703,10 @@ const definition: WidgetDefinition<Props> = {
       pvThumb = plane(theme.textDim, 0.003, 0.02);
       pvThumb.position.set(pvTrack.position.x, 0, STYLE.zOverlay);
       g.add(pvNums, pvBody, pvMsg, pvImg, pvHit, pvTrack, pvThumb);
+      pvVp = new ScrollViewport(T, g, bodyTop - bodyH, bodyTop - 0.004);
+      pvVp.add(pvBody);
+      pvVp.add(pvNums);
+      pvFrom = -1;
 
       // video controls: play/pause · seek bar · time · mute
       pvV = new T.Group();
@@ -811,15 +841,16 @@ const definition: WidgetDefinition<Props> = {
       v.underline.visible = deepest;
       const list = c.entries ?? [];
       const msg = !c.entries ? 'Loading…' : c.error ? c.error : list.length ? '' : 'Empty folder';
-      c.scroll = Math.max(0, Math.min(Math.max(0, list.length - n), c.scroll));
-      const first = Math.round(c.scroll);
+      c.sc.setMax(msg ? 0 : Math.max(0, list.length - n));
+      const first = firstOf(c.sc.pos);
+      v.first = first;
       const nameChars = Math.floor((COL_W - 2 * PAD - 0.03 - 0.085) / (NAME * CHAR));
       let names = '', metas = '';
       const now = Date.now();
       let selRow = -1;
-      for (let r = 0; r < n; r++) {
+      for (let r = 0; r <= n; r++) {
         const e = msg ? undefined : list[first + r];
-        v.icons[r].visible = v.hits[r].visible = !!e;
+        v.icons[r].visible = !!e;
         if (!e) continue;
         const [icon, color] = iconFor(e);
         setIcon(T, v.icons[r], icon);
@@ -832,20 +863,52 @@ const definition: WidgetDefinition<Props> = {
       v.names.set(names);
       (v.names as unknown as { color: string }).color = msg ? theme.textDim : theme.text;
       v.metas.set(metas);
-      const listTop = H() / 2 - PAD - HEAD;
-      v.sel.visible = selRow >= 0;
-      if (selRow >= 0) {
-        const selEntry = list[first + selRow];
-        v.selMat.color.set(selEntry?.type === 'dir' ? pathColor : fileColor);
-        v.sel.position.set(0, listTop - (selRow + 0.5) * ROW, STYLE.zContent);
-      }
+      v.selRow = selRow;
+      if (selRow >= 0) v.selMat.color.set(list[first + selRow]?.type === 'dir' ? pathColor : fileColor);
       const over = list.length > n && !msg;
       v.track.visible = v.thumb.visible = over;
-      if (over) {
+      positionRows(v);
+    }
+
+    /** Place the pooled rows at the fractional scroll offset (no text changes; cheap per frame). */
+    function positionRows(v: ColView): void {
+      const c = v.col;
+      if (!c) return;
+      const n = nRows();
+      const listTop = H() / 2 - PAD - HEAD;
+      const frac = Math.max(0, c.sc.pos - v.first);
+      const y0 = listTop + frac * ROW; // top of the first pooled row
+      const list = c.entries ?? [];
+      const live = !!c.entries && !c.error;
+      const bottom = listTop - n * ROW;
+      for (let r = 0; r <= n; r++) {
+        const y = y0 - (r + 0.5) * ROW;
+        v.icons[r].position.y = y;
+        // a row's hit box covers only its part inside the list (a sliver at an edge isn't tappable)
+        const lo = Math.max(bottom, y - ROW / 2), hi = Math.min(listTop, y + ROW / 2);
+        const hit = v.hits[r];
+        hit.visible = live && !!list[v.first + r] && hi - lo > ROW * 0.3;
+        hit.position.y = (lo + hi) / 2;
+        hit.scale.y = Math.max(1e-4, hi - lo);
+      }
+      v.names.position.y = y0;
+      v.metas.position.y = y0;
+      v.sel.visible = v.selRow >= 0;
+      if (v.selRow >= 0) v.sel.position.set(0, y0 - (v.selRow + 0.5) * ROW, STYLE.zContent);
+      if (v.track.visible && list.length > n) {
         const rh = n * ROW, th = Math.max(0.02, (rh * n) / list.length);
         v.thumb.scale.y = th;
-        v.thumb.position.y = listTop - th / 2 - (first / (list.length - n)) * (rh - th);
+        v.thumb.position.y = listTop - th / 2 - (c.sc.pos / (list.length - n)) * (rh - th);
       }
+      v.vp.update();
+      if (hoverMesh && hoverMesh.parent === v.g) placeHoverOn(hoverMesh, v.vp.planes);
+    }
+
+    /** A column's scroll position changed: re-fill the rows if another entry is now first, else just move them. */
+    function scrollView(v: ColView): void {
+      if (!v.col) return;
+      if (firstOf(v.col.sc.pos) !== v.first) renderView(v);
+      else positionRows(v);
     }
 
     function renderRail(): void {
@@ -901,26 +964,39 @@ const definition: WidgetDefinition<Props> = {
         if (p?.type === 'image' && p.src && typeof document !== 'undefined') loadImage(p.src);
         if (p?.type === 'video' && p.src && vs.available) { vs.load(p.src); vDirty = true; }
       }
+      pvFrom = -1;
+      renderPreviewText();
+    }
+
+    /** The visible window of the text preview (+1 line for the partial one while scrolling). */
+    function renderPreviewText(): void {
       const isText = preview?.type === 'text';
       pvBody.visible = pvNums.visible = isText;
       const visible = pvLines();
       const over = isText && hlLines.length > visible;
       pvTrack.visible = pvThumb.visible = over;
-      if (!isText) { pvBody.set(''); pvNums.set(''); return; }
-      const from = Math.min(Math.max(0, Math.round(textScroll)), Math.max(0, hlLines.length - visible));
-      textScroll = Math.min(textScroll, Math.max(0, hlLines.length - visible));
-      const shownLines = hlLines.slice(from, from + visible);
+      if (!isText) { pvBody.set(''); pvNums.set(''); pvFrom = -1; return; }
+      pvSc.setMax(Math.max(0, hlLines.length - visible));
+      const from = firstOf(pvSc.pos);
+      const lh = CODE * CODE_LH;
+      const top = pvTextTop() + Math.max(0, pvSc.pos - from) * lh;
+      pvBody.position.y = top;
+      pvNums.position.y = top;
+      if (over) {
+        const rh = pvTrack.scale.y, th = Math.max(0.02, (rh * visible) / hlLines.length);
+        pvThumb.scale.y = th;
+        pvThumb.position.y = pvTrack.position.y + rh / 2 - th / 2 - (pvSc.pos / (hlLines.length - visible)) * (rh - th);
+      }
+      pvVp.update();
+      if (from === pvFrom) return;
+      pvFrom = from;
+      const shownLines = hlLines.slice(from, from + visible + 1);
       const maxCh = Math.floor((PREV_W - 2 * PAD - 0.045) / (CODE * 0.6));
       const shown = shownLines.map((l) => (l.length > maxCh ? l.slice(0, maxCh - 1) + '…' : l));
       pvBody.set(shown.join('\n'));
       const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
-      setColorRanges(pvBody, hlLang ? colorRanges(hlSpans.slice(from, from + visible), shown.map((l) => l.length), syntaxInts, textInt, clips) : null);
+      setColorRanges(pvBody, hlLang ? colorRanges(hlSpans.slice(from, from + shownLines.length), shown.map((l) => l.length), syntaxInts, textInt, clips) : null);
       pvNums.set(shownLines.map((_, i) => String(from + i + 1)).join('\n'));
-      if (over) {
-        const rh = pvTrack.scale.y, th = Math.max(0.02, (rh * visible) / hlLines.length);
-        pvThumb.scale.y = th;
-        pvThumb.position.y = pvTrack.position.y + rh / 2 - th / 2 - (from / (hlLines.length - visible)) * (rh - th);
-      }
     }
 
     function loadImage(src: string): void {
@@ -962,23 +1038,30 @@ const definition: WidgetDefinition<Props> = {
     }
 
     function placeHover(name: string): void {
-      const m = partMesh(name);
+      const m = (hoverMesh = partMesh(name));
+      // a row's highlight is clipped with its column's list (it can sit half outside while scrolling)
+      const planes = name.startsWith('row:') ? views.find((v) => v.g === m?.parent)?.vp.planes ?? null : null;
+      placeHoverOn(m, planes);
+    }
+
+    function placeHoverOn(m: THREE.Mesh | null, planes: THREE.Plane[] | null): void {
       if (!hover || !m || !m.visible || !m.parent?.visible) { if (hover) hover.visible = false; return; }
+      if (hoverMat.clippingPlanes !== planes) { hoverMat.clippingPlanes = planes; activeMat.clippingPlanes = planes; }
       if (hover.parent !== m.parent) m.parent.add(hover);
       hover.position.set(m.position.x, m.position.y, STYLE.zContent + 0.0006);
-      hover.scale.set(m.scale.x, m.scale.y - 0.002, 1);
+      hover.scale.set(m.scale.x, Math.max(1e-4, m.scale.y - 0.002), 1);
       hover.visible = true;
     }
 
     function setHover(name: string): void {
       hovered = name;
-      if (!name) { if (hover) hover.visible = false; return; }
+      if (!name) { hoverMesh = null; if (hover) hover.visible = false; return; }
       placeHover(name);
     }
 
     // ---- interaction -----------------------------------------------------------------------------
 
-    let press: { hand: string; part: string; x0: number; y0: number; scroll0: number; mode: 'none' | 'scroll' | 'swipe'; col: Col | null } | null = null;
+    let press: { hand: string; part: string; x0: number; y0: number; ys: number; mode: 'none' | 'scroll' | 'swipe'; col: Col | null; sc: SmoothScroll | null } | null = null;
 
     function colOfPart(part: string): Col | null {
       const m = /^(?:row|head):(\d+)/.exec(part);
@@ -990,7 +1073,8 @@ const definition: WidgetDefinition<Props> = {
         const [, v, r] = part.split(':').map(Number);
         const c = views[v]?.col;
         if (!c?.entries) return;
-        const e = c.entries[Math.round(c.scroll) + r];
+        const v0 = views[v];
+        const e = c.entries[(v0.first >= 0 ? v0.first : firstOf(c.sc.pos)) + r];
         if (e) tapEntry(cols.indexOf(c), e);
       } else if (part.startsWith('head:')) {
         const c = colOfPart(part);
@@ -1005,6 +1089,20 @@ const definition: WidgetDefinition<Props> = {
       else if (part === 'pv:vmute') vs.setMuted(!vs.muted);
       else if (part === 'pv:close') { closePreview(); persist(); }
       else if (part === 'pv:ask' && pvWanted) ctx.askAgent(`Take a look at this file and tell me about it: ${preview?.path ?? pvWanted}`);
+    }
+
+    /** Slide / re-center the arc toward the current path (eased). */
+    function animateArc(dt: number, wasDirty: boolean): void {
+      const shT = firstVisible();
+      const cT = totalLength(shT, !!pvWanted) / 2;
+      if (snap) { shCur = shT; cCur = cT; snap = false; layout(); return; }
+      if (shCur === shT && cCur === cT) { if (wasDirty) layout(); return; }
+      const k = 1 - Math.exp(-Math.min(0.1, Math.max(0, dt || 0)) * 10);
+      shCur += (shT - shCur) * k;
+      cCur += (cT - cCur) * k;
+      if (Math.abs(shT - shCur) < 0.002) shCur = shT;
+      if (Math.abs(cT - cCur) < 0.0005) cCur = cT;
+      layout();
     }
 
     // ---- lifecycle -------------------------------------------------------------------------------
@@ -1062,7 +1160,9 @@ const definition: WidgetDefinition<Props> = {
         if (e.phase === 'start') {
           if (press || !part) return;
           const col = colOfPart(part);
-          press = { hand: e.hand, part, x0: x, y0: y, scroll0: part === 'pv:text' ? textScroll : col?.scroll ?? 0, mode: 'none', col };
+          const sc = part === 'pv:text' ? pvSc : part.startsWith('row:') && col?.entries ? col.sc : null;
+          sc?.stop(); // catching a gliding list stops it
+          press = { hand: e.hand, part, x0: x, y0: y, ys: y, mode: 'none', col, sc };
           if (part === 'pv:vseek') seekFromX(x);
           setHover(part);
           if (hover) hover.material = activeMat;
@@ -1075,24 +1175,17 @@ const definition: WidgetDefinition<Props> = {
           if (press.mode === 'none' && Math.hypot(dx, dy) > TAP) {
             press.mode = Math.abs(dx) > Math.abs(dy) ? 'swipe' : 'scroll';
             if (hover) hover.material = hoverMat;
+            // the content follows the hand from here (no jump by the tap threshold)
+            if (press.mode === 'scroll' && press.sc) { press.ys = y; press.sc.dragStart(); }
           }
-          if (press.mode === 'scroll') {
-            if (press.part.startsWith('row:') && press.col?.entries) {
-              const c = press.col;
-              const s = Math.min(Math.max(0, c.entries!.length - nRows()), Math.max(0, press.scroll0 + dy / ROW));
-              if (Math.round(s) !== Math.round(c.scroll)) dirty = true;
-              c.scroll = s;
-            } else if (press.part === 'pv:text') {
-              const s = Math.max(0, press.scroll0 + dy / (CODE * CODE_LH));
-              if (Math.round(s) !== Math.round(textScroll)) dirty = true;
-              textScroll = s;
-            }
-          }
+          // hand up → content up → later rows (rows or text lines)
+          if (press.mode === 'scroll' && press.sc) press.sc.dragMove((y - press.ys) / (press.part === 'pv:text' ? CODE * CODE_LH : ROW));
           return;
         }
         const p = press;
         press = null;
         if (hover) hover.material = hoverMat;
+        if (p.mode === 'scroll') p.sc?.dragEnd(e.phase === 'end'); // released: glide on; cancelled: stop
         if (e.phase !== 'end') return; // cancelled: never act
         if (p.part === 'pv:vseek') return;
         if (p.mode === 'none') tap(p.part);
@@ -1103,19 +1196,16 @@ const definition: WidgetDefinition<Props> = {
       },
       update(dt) {
         vTimer += dt || 0;
+        // smooth scrolling: advance glides; move only the views that scrolled
+        for (const v of views) if (v.col && v.col.sc.step(dt || 0) && !dirty) scrollView(v);
+        if (pvSc.step(dt || 0) && !dirty && pvWanted) renderPreviewText();
         if (pvV?.visible && (vDirty || vTimer > 0.25)) { vDirty = false; vTimer = 0; renderVideoControls(); }
         const wasDirty = dirty;
         if (dirty) { dirty = false; render(); }
-        const shT = firstVisible();
-        const cT = totalLength(shT, !!pvWanted) / 2;
-        if (snap) { shCur = shT; cCur = cT; snap = false; layout(); return; }
-        if (shCur === shT && cCur === cT) { if (wasDirty) layout(); return; }
-        const k = 1 - Math.exp(-Math.min(0.1, Math.max(0, dt || 0)) * 10);
-        shCur += (shT - shCur) * k;
-        cCur += (cT - cCur) * k;
-        if (Math.abs(shT - shCur) < 0.002) shCur = shT;
-        if (Math.abs(cT - cCur) < 0.0005) cCur = cT;
-        layout();
+        animateArc(dt, wasDirty);
+        // clip planes are in world space: follow the entity / arc motion every frame
+        for (const v of views) if (v.col && v.g.visible) v.vp.update();
+        if (pv?.visible) pvVp.update();
       },
       dispose() {
         for (const off of subs.values()) off();

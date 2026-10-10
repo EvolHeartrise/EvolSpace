@@ -1,5 +1,5 @@
 // browser — the agent-browser view: URL bar, status line, tap → click, pinch-drag → scroll, buttons.
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import browser, { displayUrl, scrollPixels } from '../widgets/browser/widget.ts';
 import { mount } from './harness.ts';
 
@@ -37,4 +37,35 @@ it('shows state + agent actions, and sends taps, scrolls and buttons as commands
   expect(h.rec.errors).toEqual([]);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
+});
+
+
+it('scrolls in small steps while dragging and keeps scrolling after a flick', async () => {
+  const h = await mount(browser, {});
+  h.publish('browser.state', { url: 'https://example.com/', title: 'Example', loading: false, viewport: { w: 1280, h: 800 } });
+  h.frame();
+  const scrolls = () => h.rec.published.filter((p) => (p.value as { cmd?: string }).cmd === 'scroll').map((p) => (p.value as { dy: number }).dy);
+  // drag with frames in between (update() sends what the hand moved, ≥ 4 px, ≤ 1 per 33 ms)
+  let clock = 1000;
+  const spy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+  h.interact({ handler: 'drag', phase: 'start', objectName: 'screen', localPoint: [0, -0.05, 0] });
+  let y = -0.05;
+  for (let i = 0; i < 6; i++) {
+    clock += 40;
+    y += 0.08 / 6;
+    h.interact({ handler: 'drag', phase: 'move', objectName: 'screen', localPoint: [0, y, 0] });
+    h.frame(1, 0.04);
+  }
+  const duringDrag = scrolls();
+  clock += 4;
+  h.interact({ handler: 'drag', phase: 'end', objectName: 'screen', localPoint: [0, y, 0] });
+  spy.mockRestore();
+  expect(duringDrag.length).toBeGreaterThan(2); // many small steps, not one jump
+  expect(duringDrag.every((d) => d > 0)).toBe(true);
+  const sumAtRelease = scrolls().reduce((a, b) => a + b, 0); // includes the remainder flushed on release
+  h.frame(60, 1 / 30);
+  const after = scrolls();
+  expect(after.length).toBeGreaterThan(duringDrag.length);
+  expect(after.reduce((a, b) => a + b, 0)).toBeGreaterThan(sumAtRelease); // the glide went on in the same direction
+  h.dispose();
 });

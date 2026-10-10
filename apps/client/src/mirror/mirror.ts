@@ -115,6 +115,7 @@ export class MirrorRenderer implements EvolMirrorApi {
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(1);
+    this.renderer.localClippingEnabled = true; // widget scroll areas clip their rows (library/shared/scroll.ts)
     this.renderer.setSize(DEFAULT_WIDTH, DEFAULT_HEIGHT, false);
     this.renderer.domElement.id = 'evol-mirror-canvas';
     (opts.container ?? document.body).appendChild(this.renderer.domElement);

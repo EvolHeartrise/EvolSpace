@@ -13,6 +13,7 @@ import { truncate, formatAge } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { isTensor } from '../../shared/tensor.ts';
 import { STYLE } from '../../shared/style.ts';
+import { SmoothScroll } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   width: number;
@@ -25,6 +26,11 @@ interface Action { text: string; at: number; source?: string; x?: number; y?: nu
 const BAR = 0.05;
 const STATUS = 0.04;
 const TAP_SLOP = 0.012; // m of hand travel before a pinch on the page becomes a scroll
+/** Scroll commands: at least this many px, at most one per SCROLL_MS (smooth, but not a flood). */
+const SCROLL_MIN_PX = 4;
+const SCROLL_MS = 33;
+/** The page's scroll range is unknown here: SmoothScroll runs around the middle of a huge range. */
+const SCROLL_MID = 1e9;
 
 /** Readable URL for the bar: no scheme, no trailing slash. */
 export function displayUrl(u: string): string {
@@ -69,12 +75,25 @@ const definition: WidgetDefinition<Props> = {
     let t = 0, timer = 0;
     let aspect = 1280 / 800;
     let press: { hand: string; part: string; y0: number; lastY: number; moved: boolean; u: number; v: number } | null = null;
-    let lastScrollSent = 0, scrollAcc = 0;
+    // Page scrolling: the hand drives a SmoothScroll in page pixels (1:1 while dragging, glide after a
+    // flick); whatever it moved since the last command is sent as {cmd:'scroll', dy} in small steps.
+    const sc = new SmoothScroll();
+    let sentPos = 0, sinceScrollSent = 1, scrollU = 0.5, scrollV = 0.5;
     const offs: Array<() => void> = [];
 
     const W = () => ctx.props.width;
     const H = () => W() / aspect;
     const prefix = () => ctx.props.prefix || 'browser';
+
+    /** Send the scroll accumulated since the last command (throttled by frame time unless `force`). */
+    function flushScroll(force: boolean): void {
+      const d = Math.round(sc.pos - sentPos);
+      if (!d) return;
+      if (!force && (Math.abs(d) < SCROLL_MIN_PX || sinceScrollSent < SCROLL_MS / 1000)) return;
+      send({ cmd: 'scroll', dy: d, x: scrollU, y: scrollV });
+      sentPos += d;
+      sinceScrollSent = 0;
+    }
 
     function build(): void {
       if (group) disposeTree(group);
@@ -258,6 +277,7 @@ const definition: WidgetDefinition<Props> = {
         if (e.phase === 'start') {
           if (press) return;
           if (part === 'screen' || part.startsWith('btn:')) {
+            if (sc.active) { flushScroll(true); sc.stop(); } // a touch stops a glide
             const [u, v] = uv(lp);
             press = { hand: e.hand, part, y0: lp[1], lastY: lp[1], moved: false, u, v };
           }
@@ -266,32 +286,35 @@ const definition: WidgetDefinition<Props> = {
         if (!press || e.hand !== press.hand) return;
         if (e.phase === 'move') {
           if (press.part !== 'screen') return;
-          if (!press.moved && Math.abs(lp[1] - press.y0) > TAP_SLOP) press.moved = true;
+          if (!press.moved && Math.abs(lp[1] - press.y0) > TAP_SLOP) {
+            press.moved = true;
+            sc.setMax(2 * SCROLL_MID);
+            sc.pos = sentPos = SCROLL_MID;
+            scrollU = press.u;
+            scrollV = press.v;
+            sc.dragStart();
+          }
           if (press.moved) {
             // content follows the hand: hand up → page scrolls down
-            scrollAcc += scrollPixels(lp[1] - press.lastY, H(), state?.viewport?.h ?? 800);
             press.lastY = lp[1];
-            const now = Date.now();
-            if (Math.abs(scrollAcc) >= 20 && now - lastScrollSent > 80) {
-              send({ cmd: 'scroll', dy: scrollAcc, x: press.u, y: press.v });
-              scrollAcc = 0;
-              lastScrollSent = now;
-            }
+            sc.dragMove(scrollPixels(lp[1] - press.y0, H(), state?.viewport?.h ?? 800)); // sent from update()
           }
           return;
         }
         const p = press;
         press = null;
+        if (p.moved) { sc.dragEnd(e.phase === 'end'); flushScroll(true); } // a flick keeps scrolling (update)
         if (e.phase !== 'end') return;
         if (p.part === 'screen') {
-          if (p.moved) { if (scrollAcc) send({ cmd: 'scroll', dy: scrollAcc, x: p.u, y: p.v }); scrollAcc = 0; }
-          else send({ cmd: 'click', x: p.u, y: p.v });
+          if (!p.moved) send({ cmd: 'click', x: p.u, y: p.v });
         } else if (p.part === 'btn:back') send({ cmd: 'back' });
         else if (p.part === 'btn:forward') send({ cmd: 'forward' });
         else if (p.part === 'btn:reload') send({ cmd: 'reload' });
       },
       update(dt) {
         t += dt;
+        sinceScrollSent += dt;
+        if (sc.active) { sc.step(dt); flushScroll(!sc.active); }
         if (marker && markerMat) {
           markerAge += dt;
           const on = markerAge < 1;
