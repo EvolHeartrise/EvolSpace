@@ -30,13 +30,15 @@ const HISTORY = 60;
 const LEASE_MS = 5 * 60_000;
 const MAX_CONTENT = 2000;
 
-// One consistent identity: desktop Chrome on Linux using the web client. UA, browser_version and
-// Sec-Ch-Ua agree, and X-Super-Properties equals the IDENTIFY properties (as discordo does).
+// Identity: the web client in desktop Chrome on Linux (X-Super-Properties = IDENTIFY properties, as discordo
+// does). HTTP requests do NOT send a Chrome User-Agent: Discord answers a browser UA over Node's (non-Chrome)
+// TLS fingerprint with 403 "internal network error" (code 40333). discordo spoofs Chrome's TLS fingerprint to
+// get away with it; Node can't, so requests keep Node's default User-Agent.
 const CHROME = '152';
 const BROWSER_VERSION = `${CHROME}.0.0.0`;
 const UA = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${BROWSER_VERSION} Safari/537.36`;
-/** discordo's scraped build (2026); replaced at startup by the live one from discord.com/login when possible. */
-const BUILD_FALLBACK = 630444;
+/** The web client's build (Oct 2026); replaced at startup by the live one from discord.com/login when possible. */
+const BUILD_FALLBACK = 634304;
 const LAUNCH_ID = randomUUID();
 export const superProperties = (build) => ({
   os: 'Linux', browser: 'Chrome', device: '', system_locale: 'en-US', has_client_mods: false, browser_user_agent: UA, browser_version: BROWSER_VERSION,
@@ -217,7 +219,6 @@ class DiscordClient {
   headers(json = false) {
     return {
       Authorization: this.token, // user tokens go raw (no "Bot " prefix)
-      'User-Agent': UA,
       'X-Super-Properties': Buffer.from(JSON.stringify(superProperties(this.build))).toString('base64'),
       'X-Discord-Locale': 'en-US',
       'X-Discord-Timezone': Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -229,9 +230,6 @@ class DiscordClient {
       'Sec-Fetch-Dest': 'empty',
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-origin',
-      'Sec-Ch-Ua': `"Chromium";v="${CHROME}", "Not-A.Brand";v="24", "Google Chrome";v="${CHROME}"`,
-      'Sec-Ch-Ua-Mobile': '?0',
-      'Sec-Ch-Ua-Platform': '"Linux"',
       ...(json ? { 'Content-Type': 'application/json' } : {}),
     };
   }
@@ -258,7 +256,7 @@ class DiscordClient {
   /** The web client's current build number, scraped from the login page like discordo (fallback: BUILD_FALLBACK). */
   async fetchBuild() {
     try {
-      const page = await (await fetch('https://discord.com/login', { headers: { 'User-Agent': UA, Accept: 'text/html' }, signal: AbortSignal.timeout(10_000) })).text();
+      const page = await (await fetch('https://discord.com/login', { headers: { Accept: 'text/html' }, signal: AbortSignal.timeout(10_000) })).text();
       const m = /"BUILD_NUMBER":\s*"(\d+)"/.exec(page);
       if (m) this.build = Number(m[1]);
     } catch { /* keep the fallback */ }
