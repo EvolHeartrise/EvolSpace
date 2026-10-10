@@ -29,6 +29,9 @@ const ICONS = [
   'droplet', 'thermometer', 'umbrella', 'sunrise', 'sunset', 'navigation-2', 'map-pin', 'arrow-up',
   // browser
   'arrow-left', 'arrow-right', 'globe', 'lock', 'mouse-pointer-2', 'bot',
+  // files
+  'folder', 'folder-open', 'file', 'file-text', 'file-code', 'file-image', 'file-archive', 'file-spreadsheet', 'file-terminal',
+  'file-key', 'file-cog', 'braces', 'image', 'film', 'music', 'house', 'corner-left-up', 'eye', 'eye-off', 'message-square', 'hard-drive',
 ];
 
 const nodes = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/lucide-static/icon-nodes.json'), 'utf8'));

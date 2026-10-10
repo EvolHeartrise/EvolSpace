@@ -1,0 +1,8 @@
+{
+  "description": "File system for the file-browser widget: directory listings and text/image previews on request (files.request → the widget's reply channel). Dot files only on request; keys, secrets and credential files are never listed or read.",
+  "command": "node",
+  "args": ["files.mjs", "--prefix", "files"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}
