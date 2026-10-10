@@ -236,7 +236,7 @@ export function createVoice(deps: VoiceDeps, opts: VoiceOptions = {}): VoiceServ
       }
       let args: Record<string, unknown> | undefined;
       try {
-        args = substituteArgs(def.args, { groups: m.groups, entities: ents, text: m.text, transcript: text });
+        args = substituteArgs(def.args, { groups: m.groups, entities: ents, text: m.text, transcript: text, head: ctx.head });
       } catch (e) {
         if (!(e instanceof MissingVariableError)) throw e;
         const msg = /^(target|focus|selected|gaze)$/.test(e.variable)

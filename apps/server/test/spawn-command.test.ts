@@ -34,18 +34,18 @@ describe('placeInFront', () => {
     const p = placeInFront({ position: [1, 1.6, 0], rotation: [0, 0, 0, 1] }, [0.4, 0.3, 0.05]);
     expect(p.position[0]).toBeCloseTo(1);
     expect(p.position[1]).toBeCloseTo(1.45);
-    expect(p.position[2]).toBeCloseTo(-0.9);
+    expect(p.position[2]).toBeCloseTo(-0.7);
     expect(p.rotation[1]).toBeCloseTo(0);
     expect(p.rotation[3]).toBeCloseTo(1);
     // Head turned 90° left (facing -X): the widget sits at -X and is yawed to face +X.
     const s = Math.SQRT1_2;
     const q = placeInFront({ position: [0, 1.6, 0], rotation: [0, s, 0, s] }, [2, 1, 1]);
-    expect(q.position[0]).toBeCloseTo(-2.5);
+    expect(q.position[0]).toBeCloseTo(-1.6); // big widgets: at most 1.6 m away
     expect(q.position[2]).toBeCloseTo(0);
     expect(q.rotation[1]).toBeCloseTo(s);
   });
   it('without a headset: eye height in front of the origin', () => {
-    expect(placeInFront(null).position).toEqual([0, 1.3, -0.8]);
+    expect(placeInFront(null).position).toEqual([0, 1.3, -0.7]);
   });
 });
 
@@ -70,12 +70,25 @@ describe('spawn command', () => {
     const op = ops[0]!.ops[0] as Extract<SceneOp, { op: 'add' }>;
     expect(op.entity).toMatchObject({ widget: 'line-plot', name: 'Line Plot', props: {} });
     const [x, y, z] = op.entity.transform!.position;
-    expect([x, y, z].map((v) => Math.round(v * 1000) / 1000)).toEqual([0, 1.45, -0.8]);
+    expect([x, y, z].map((v) => Math.round(v * 1000) / 1000)).toEqual([0, 1.45, -0.7]);
     // Bigger widgets go further away.
     await reg.run('spawn', { widget: 'explorer', name: 'Files' }, { origin: 'http' });
     const big = ops[1]!.ops[0] as Extract<SceneOp, { op: 'add' }>;
     expect(big.entity.name).toBe('Files');
-    expect(big.entity.transform!.position[2]).toBeCloseTo(-2.3);
+    expect(big.entity.transform!.position[2]).toBeCloseTo(-1.48);
+  });
+
+  it("places in front of the speaker's own head pose when given (desktop camera or headset)", async () => {
+    const { reg, ops } = setup({ position: [0, 1.6, 0], rotation: [0, 0, 0, 1] });
+    await reg.run('spawn', { widget: 'box', head: { position: [5, 1.2, 5], rotation: [0, 1, 0, 0] } }, { origin: 'voice' });
+    const op = ops[0]!.ops[0] as Extract<SceneOp, { op: 'add' }>;
+    const [x, y, z] = op.entity.transform!.position;
+    expect(x).toBeCloseTo(5);
+    expect(y).toBeCloseTo(1.05);
+    expect(z).toBeCloseTo(5.7); // facing +Z
+    // A malformed head falls back to the headset pose.
+    await reg.run('spawn', { widget: 'box', head: { position: [1, 2] } }, { origin: 'voice' });
+    expect((ops[1]!.ops[0] as Extract<SceneOp, { op: 'add' }>).entity.transform!.position[2]).toBeCloseTo(-0.7);
   });
 
   it('declines a name that is no widget (voice hands it to Claude)', async () => {

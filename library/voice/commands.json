@@ -342,11 +342,11 @@
   },
   {
     "id": "spawn-widget",
-    "description": "Spawn any library widget by name in front of the user ('spawn explorer', 'add a line plot'). A name that is no widget ('add a weather widget for Cozumel') goes to Claude.",
+    "description": "Spawn any library widget by name straight in front of the speaker (the view they spoke from) ('spawn explorer', 'add a line plot'). A name that is no widget ('add a weather widget for Cozumel') goes to Claude.",
     "patterns": [
       "(spawn|spawns|spawned|add|create)( (me|in))?( (a|an|the|another|one))?( new)? (?<widget>[a-z0-9][a-z0-9 ]{0,40})"
     ],
     "command": "spawn",
-    "args": { "widget": "$widget" }
+    "args": { "widget": "$widget", "head": "$head" }
   }
 ]

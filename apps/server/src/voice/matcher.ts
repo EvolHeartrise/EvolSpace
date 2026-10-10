@@ -10,6 +10,7 @@
 //   "$group"            named regex group (string). Unmatched optional group → key omitted.
 //   "$target"           deictic target: right-hand focus → left-hand focus → selected → gaze
 //   "$focus" "$selected" "$gaze"   the individual context entities
+//   "$head"             the speaking client's head pose {position, rotation} (whole value only; absent → omitted)
 //   "$text"             the normalized utterance;  "$transcript" the raw transcript
 //   "$var:number"       typed: number (accepts "3", "three", "twenty one"); also :int, :slug, :bool
 // A string that is exactly one "$var" is replaced by the (typed) value; "$var"
@@ -99,6 +100,8 @@ export interface SubstitutionVars {
   entities: ContextEntities;
   text: string;
   transcript: string;
+  /** Head pose of the client that spoke (VoiceContext.head), for "$head". */
+  head?: unknown;
 }
 
 function lookup(name: string, v: SubstitutionVars): string | undefined {
@@ -138,6 +141,7 @@ const OMIT = Symbol('omit');
 
 function subValue(x: unknown, v: SubstitutionVars): unknown {
   if (typeof x === 'string') {
+    if (x === '$head') return v.head && typeof v.head === 'object' ? structuredClone(v.head) : OMIT;
     const exact = EXACT_RE.exec(x);
     if (exact) {
       const val = lookup(exact[1], v);
