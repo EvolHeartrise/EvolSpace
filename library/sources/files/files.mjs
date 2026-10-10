@@ -316,7 +316,37 @@ async function follow(channel, cb) {
   connect();
 }
 
+/**
+ * Place a file / folder in the room (the palm browser's drag-out): spawn a `file-browser` root entity at the
+ * drop point — on the folder, or on a file's folder with that file previewed.
+ *   <P>.palm.place = {path, type: 'file'|'dir'|'link', name?, position: [x,y,z], rotation?: [x,y,z,w], reply?, nonce?}
+ *   reply ← {nonce, ok, entity?, error?}
+ */
+async function place(req) {
+  if (!req || typeof req !== 'object' || typeof req.path !== 'string' || !Array.isArray(req.position) || req.position.length !== 3 || !req.position.every(Number.isFinite)) return;
+  const abs = resolvePath(req.path);
+  const answer = (v) => (typeof req.reply === 'string' && req.reply.startsWith(`${P}.`) ? publish(req.reply, { nonce: req.nonce ?? null, ...v }) : null);
+  if (denied(abs)) return answer({ ok: false, error: 'private path' });
+  const isDir = req.type === 'dir';
+  const rot = Array.isArray(req.rotation) && req.rotation.length === 4 && req.rotation.every(Number.isFinite) ? req.rotation : [0, 0, 0, 1];
+  const entity = {
+    widget: 'file-browser', name: `Files · ${path.basename(abs) || abs}`,
+    props: isDir ? { path: displayPath(abs) } : { path: displayPath(path.dirname(abs)), file: abs, rows: 10 },
+    transform: { position: req.position, rotation: rot, scale: [1, 1, 1] },
+  };
+  try {
+    const r = await fetch(`${EVOL}/api/scene/ops`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'user', ops: [{ op: 'add', entity }] }) });
+    const out = await r.json();
+    if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
+    await answer({ ok: true, entity: out.ids?.[0] ?? null });
+  } catch (e) {
+    console.error(`place ${abs}: ${e.message ?? e}`);
+    await answer({ ok: false, error: String(e.message ?? e) });
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await follow(`${P}.request`, handle);
+  await follow(`${P}.palm.place`, place);
   console.log(`files: listening on ${P}.request (home ${HOME})`);
 }

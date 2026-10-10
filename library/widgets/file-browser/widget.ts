@@ -20,6 +20,7 @@ import { STYLE } from '../../shared/style.ts';
 
 interface Props extends Record<string, unknown> {
   path: string;
+  file: string;
   showHidden: boolean;
   width: number;
   rows: number;
@@ -79,6 +80,7 @@ const definition: WidgetDefinition<Props> = {
   version: '1.0.0',
   props: {
     path: { type: 'string', default: '~', description: 'Current folder ("~" = home); updated as you navigate.' },
+    file: { type: 'string', default: '', description: 'A file to preview when the widget loads (e.g. one placed from the palm browser).' },
     showHidden: { type: 'boolean', default: false, description: 'Show dot files (secrets stay hidden regardless).' },
     width: { type: 'number', default: 0.6, min: 0.35, max: 2, step: 0.01, description: 'List pane width (m); the preview opens beside it.' },
     rows: { type: 'integer', default: 14, min: 4, max: 40, description: 'Visible rows.' },
@@ -392,6 +394,7 @@ const definition: WidgetDefinition<Props> = {
     build();
     subscribe();
     open(current);
+    if (String(ctx.props.file ?? '').trim()) { pendingPreview = String(ctx.props.file).trim(); request('preview', pendingPreview); }
 
     return {
       onProps(p, prev) {
