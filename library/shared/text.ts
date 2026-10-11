@@ -83,8 +83,21 @@ export class MeasureWatch {
 
 /** Set troika colorRanges when the text implementation supports it (no-op otherwise). */
 export function setColorRanges(mesh: THREE.Object3D, ranges: Record<number, number> | null): void {
-  const m = mesh as unknown as { colorRanges?: unknown };
-  if ('colorRanges' in m || 'text' in m) m.colorRanges = ranges;
+  const m = mesh as unknown as { colorRanges?: Record<number, number> | null };
+  if (!('colorRanges' in m || 'text' in m)) return;
+  // A new object makes troika lay the text out again (async: the old layout shows meanwhile), so an
+  // unchanged range set — widgets re-render every frame while scrolling — must not be reassigned.
+  if (sameRanges(m.colorRanges ?? null, ranges)) return;
+  m.colorRanges = ranges;
+}
+
+function sameRanges(a: Record<number, number> | null, b: Record<number, number> | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) if (a[k as unknown as number] !== b[k as unknown as number]) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------- markup

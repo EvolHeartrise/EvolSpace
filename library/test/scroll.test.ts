@@ -86,13 +86,28 @@ it('item-list: a drag leaves a fractional position with the spare row shown, and
   const items = Array.from({ length: 20 }, (_, i) => ({ id: `#${i}`, title: `Item ${i}`, status: 'open' }));
   const h = await mount(itemList, { rows: 4 });
   h.input('items', items);
-  h.frame();
+  h.frame(3);
   expect(h.hasText('#4  Item 4')).toBe(false);
   const rowH = 0.0125 * 2.9;
   h.drag('row:1', [0, rowH * 2, 0], { steps: 8, end: false }); // past the tap threshold, then 1.55 rows of content travel
-  h.frame();
+  h.frame(3);
   expect(h.hasText('#4  Item 4')).toBe(true); // the spare row is partly visible at the bottom
   expect(h.hasText('#1  Item 1')).toBe(true); // and the top row partly visible
   expect(h.rec.errors).toEqual([]);
+  h.dispose();
+});
+
+it('item-list: scrolling less than a row keeps every in-view item in its text object (no re-layout flicker)', async () => {
+  const items = Array.from({ length: 20 }, (_, i) => ({ id: `#${i}`, title: `Item ${i}`, status: 'open' }));
+  const h = await mount(itemList, { rows: 4 });
+  h.input('items', items);
+  h.frame(3);
+  const textOf = (s: string) => h.root.getObjectsByProperty('text', s)[0];
+  const before = textOf('#2  Item 2');
+  const rowH = 0.0125 * 2.9;
+  h.drag('row:1', [0, rowH * 1.4, 0], { steps: 8, end: false }); // ≈ 1 row of content travel after the tap threshold
+  h.frame(3);
+  expect(textOf('#2  Item 2')).toBe(before); // same mesh, text never re-set
+  expect(textOf('#2  Item 2').visible).toBe(true);
   h.dispose();
 });

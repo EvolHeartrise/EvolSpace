@@ -290,6 +290,16 @@ function setState(patch) {
   stateTimer = setTimeout(() => void publish(`${P}.state`, state), 30);
 }
 
+/** Whether the current track is in Liked Songs (the like button). */
+let likedFor = '';
+async function checkLiked(uri) {
+  likedFor = uri;
+  try {
+    const r = await api('GET', `/library/liked?uris=${encodeURIComponent(uri)}`);
+    if (likedFor === uri) setState({ liked: !!r?.items?.find((x) => x.uri === uri)?.liked });
+  } catch { if (likedFor === uri) setState({ liked: undefined }); }
+}
+
 let refreshing = null;
 let refreshAgain = false;
 async function refresh() {
@@ -305,6 +315,7 @@ async function refresh() {
       }
       const t = s.track;
       const steps = s.volume_steps || 100;
+      if (t?.uri && t.uri !== likedFor) void checkLiked(t.uri);
       setState({
         auth: 'ready', login: undefined, error: undefined, user: s.username, device: s.device_name || 'EvolSpace',
         track: t ? {
@@ -466,7 +477,12 @@ async function onRequest(req) {
         await api('POST', '/player/repeat_track', { repeat_track: req.mode === 'track' });
         break;
       case 'queue': await api('POST', '/player/add_to_queue', { uri: String(req.uri) }); break;
-      case 'like': await api('POST', '/library/liked', { uris: [String(req.uri)], liked: req.liked !== false }); break;
+      case 'like': {
+        const liked = req.liked !== false;
+        await api('POST', '/library/liked', { uris: [String(req.uri)], liked });
+        if (state.track?.uri === req.uri) setState({ liked });
+        break;
+      }
       case 'search': await search(req.query); break;
       case 'library': reply?.({ kind: 'library', items: await library() }); break;
       case 'tracks': {
