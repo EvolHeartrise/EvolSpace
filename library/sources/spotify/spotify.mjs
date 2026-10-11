@@ -235,9 +235,20 @@ async function api(method, p, body) {
 
 // ---------------------------------------------------------------- audio: FIFO → paced 100 ms chunks
 
+/**
+ * Read gate: closed while the player is paused/stopped, so PCM still sitting in the pipe isn't streamed
+ * out after the pause (it plays on resume instead, without a gap in the song).
+ */
+const gate = { open: true, apply: () => {} };
+
 function readAudio() {
   // Opening a FIFO for reading blocks until the player opens it for writing (on first play).
   const stream = fs.createReadStream(FIFO, { highWaterMark: CHUNK });
+  let paced = false; // paused by the pacing timer (resumes by itself)
+  gate.apply = () => {
+    if (!gate.open) stream.pause();
+    else if (!paced) stream.resume();
+  };
   let pending = Buffer.alloc(0);
   let t0 = 0; // wall clock of the stream's sample 0 (re-anchored after gaps)
   let sent = 0; // bytes sent since t0
@@ -257,9 +268,10 @@ function readAudio() {
     const ahead = t0 + (sent / BYTES_PER_SEC) * 1000 - Date.now();
     if (ahead > LEAD_MS) {
       stream.pause();
+      paced = true;
       clearTimeout(resumeTimer);
-      resumeTimer = setTimeout(() => stream.resume(), ahead - LEAD_MS / 2);
-    }
+      resumeTimer = setTimeout(() => { paced = false; if (gate.open) stream.resume(); }, ahead - LEAD_MS / 2);
+    } else if (!gate.open) stream.pause();
   });
   const reopen = () => { clearTimeout(resumeTimer); setTimeout(readAudio, 200); };
   stream.on('end', reopen);
@@ -272,6 +284,8 @@ let state = { auth: 'starting', device: 'EvolSpace' };
 let stateTimer = null;
 function setState(patch) {
   state = { ...state, ...patch };
+  const open = !(state.paused || state.stopped);
+  if (open !== gate.open) { gate.open = open; gate.apply(); }
   clearTimeout(stateTimer);
   stateTimer = setTimeout(() => void publish(`${P}.state`, state), 30);
 }
