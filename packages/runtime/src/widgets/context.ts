@@ -180,6 +180,7 @@ export function createWidgetContext(
       if (state.alive) env.reportError(entityId, widget, String(message), detail, true);
     },
     isMirror: env.isMirror,
+    client: { get id() { return env.net.clientId; } },
     user: env.user,
   };
   return ctx;

@@ -473,6 +473,7 @@ export class Harness {
         self.rec.errors.push({ message, detail });
       },
       isMirror: !!this.opts.isMirror,
+      client: { id: 'c-test' },
       user,
     };
     return ctx;

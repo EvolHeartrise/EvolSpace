@@ -112,6 +112,7 @@ export class Rig {
       log: () => {},
       error: (m) => { this.errors.push(m); },
       isMirror: false,
+      client: { id: 'c-test' },
       user: { head: { position: [0, 1.6, 0], rotation: [0, 0, 0, 1] }, hands: {} },
     };
     const inst = await def.create(ent.ctx);
