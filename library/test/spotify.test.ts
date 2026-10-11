@@ -124,3 +124,21 @@ it('seeking: the bar stays where it was dropped until the source reports the new
   expect(h.hasText('2:40')).toBe(true);
   h.dispose();
 });
+
+it('switching songs shows the new song at once and never "Nothing playing" while it loads', async () => {
+  const h = await mount(spotify, {});
+  const next = { uri: 'spotify:track:t2', name: 'Aerodynamic', artists: ['Daft Punk'], album: 'Discovery', albumUri: 'spotify:album:a', duration: 212_000 };
+  h.publish('spotify.state', { ...ready, next });
+  h.frame(3);
+  h.press('next', 'drag');
+  h.frame(3);
+  expect(h.hasText('Aerodynamic')).toBe(true); // before the source reports it
+  h.publish('spotify.state', { ...ready, track: undefined, next: undefined }); // the player is loading
+  h.frame(3);
+  expect(h.hasText('Nothing playing')).toBe(false);
+  expect(h.hasText('Aerodynamic')).toBe(true);
+  h.publish('spotify.state', { ...ready, track: next, position: 0, positionAt: Date.now() });
+  h.frame(3);
+  expect(h.hasText('Aerodynamic')).toBe(true);
+  h.dispose();
+});

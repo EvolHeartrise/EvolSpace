@@ -251,17 +251,34 @@ async function api(method, p, body) {
 const gate = { open: true, apply: () => {} };
 
 /**
- * A jump (skip, play, seek): the pipe still holds up to a full buffer of the old position's audio
- * (the player blocks on it while we pace), so drop that much and start a new generation.
+ * A jump (skip, play, seek), once the player has done it: whatever it had already written — the full
+ * pipe (it blocks on it while we pace) plus its own output buffer — is the old position's audio. Read it
+ * as fast as possible and throw it away until the stream pauses (the player loading the new track), or at
+ * most DISCARD_MAX bytes (an instant seek has no pause), then start a new generation.
  */
-const PIPE_BYTES = 65536;
-let discard = 0;
-let resetReader = () => {};
-function jump() {
+const DISCARD_MAX = 96 * 1024; // ≈ 0.55 s
+const DISCARD_GAP_MS = 40;
+let discarding = null; // {bytes, until, timer}
+const reader = { reset: () => {}, flow: () => {} };
+function jumpDone() {
   gen = (gen + 1) & 0x7fff;
-  discard = PIPE_BYTES;
-  resetReader();
+  if (discarding) clearTimeout(discarding.timer);
+  discarding = { bytes: 0, until: Date.now() + 1500, timer: null };
+  armGap();
+  reader.reset();
+  reader.flow();
   setState({ gen });
+}
+function armGap() {
+  if (!discarding) return;
+  clearTimeout(discarding.timer);
+  discarding.timer = setTimeout(endDiscard, DISCARD_GAP_MS);
+}
+function endDiscard() {
+  if (!discarding) return;
+  clearTimeout(discarding.timer);
+  discarding = null;
+  reader.reset();
 }
 
 function readAudio() {
@@ -276,13 +293,13 @@ function readAudio() {
   let t0 = 0; // wall clock of the stream's sample 0 (re-anchored after gaps)
   let sent = 0; // bytes sent since t0
   let resumeTimer = null;
-  resetReader = () => { pending = Buffer.alloc(0); t0 = 0; };
+  reader.reset = () => { pending = Buffer.alloc(0); t0 = 0; };
+  reader.flow = () => { paced = false; clearTimeout(resumeTimer); if (gate.open) stream.resume(); };
   stream.on('data', (data) => {
-    if (discard > 0) {
-      const n = Math.min(discard, data.length);
-      discard -= n;
-      data = data.subarray(n);
-      if (!data.length) return;
+    if (discarding) {
+      discarding.bytes += data.length;
+      if (discarding.bytes < DISCARD_MAX && Date.now() < discarding.until) { armGap(); return; }
+      endDiscard(); // cap reached: this read is already the new audio's
     }
     pending = pending.length ? Buffer.concat([pending, data]) : data;
     const now = Date.now();
@@ -320,6 +337,18 @@ function setState(patch) {
   stateTimer = setTimeout(() => void publish(`${P}.state`, state), 30);
 }
 
+/** Now-playing info for the widget; the cover is fetched into data/media. */
+function trackInfo(t) {
+  if (!t?.uri) return undefined;
+  return {
+    uri: t.uri, name: t.name, artists: t.artist_names ?? [], album: t.album_name ?? '', albumUri: t.album_uri ?? '',
+    cover: cover(t.album_cover_url, () => void refresh()), duration: t.duration ?? 0,
+  };
+}
+/** The track played before the current one (what "previous" goes back to). */
+let prevTrack;
+let lastSeen;
+
 /** Whether the current track is in Liked Songs (the like button). */
 let likedFor = '';
 async function checkLiked(uri) {
@@ -346,12 +375,13 @@ async function refresh() {
       const t = s.track;
       const steps = s.volume_steps || 100;
       if (t?.uri && t.uri !== likedFor) void checkLiked(t.uri);
+      if (t?.uri && t.uri !== lastSeen?.uri) { if (lastSeen) prevTrack = lastSeen; lastSeen = trackInfo(t); }
       setState({
         auth: 'ready', login: undefined, error: undefined, user: s.username, device: s.device_name || 'EvolSpace',
-        track: t ? {
-          uri: t.uri, name: t.name, artists: t.artist_names ?? [], album: t.album_name ?? '', albumUri: t.album_uri ?? '',
-          cover: cover(t.album_cover_url, () => void refresh()), duration: t.duration ?? 0,
-        } : undefined,
+        track: trackInfo(t),
+        // For an instant "next" / "previous" in the widget (shown before the player reports the switch).
+        next: trackInfo(s.next_track),
+        prev: prevTrack,
         position: t?.position ?? 0, positionAt: Date.now(),
         paused: !!s.paused, stopped: !!s.stopped, buffering: !!s.buffering,
         volume: Math.round(((s.volume ?? 0) / steps) * 100),
@@ -490,7 +520,6 @@ async function onRequest(req) {
   if (!req || typeof req !== 'object') return;
   const reply = typeof req.reply === 'string' && req.reply.startsWith(`${P}.`) ? (v) => publish(req.reply, { nonce: req.nonce ?? null, ...v }) : null;
   try {
-    if (['play', 'next', 'prev', 'seek'].includes(req.cmd)) jump();
     switch (req.cmd) {
       case 'play': {
         if (!/^spotify:/.test(String(req.uri ?? ''))) throw new Error('play needs a spotify: uri');
@@ -526,6 +555,7 @@ async function onRequest(req) {
       case 'refresh': await refresh(); break;
       default: return;
     }
+    if (['play', 'next', 'prev', 'seek'].includes(req.cmd)) jumpDone();
     if (['play', 'resume', 'pause', 'playpause', 'next', 'prev', 'seek', 'volume', 'shuffle', 'repeat'].includes(req.cmd)) void refresh();
   } catch (e) {
     console.error(`${req.cmd}: ${e.message}`);
