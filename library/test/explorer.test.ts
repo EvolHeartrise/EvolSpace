@@ -1,5 +1,6 @@
 // explorer — Miller columns on an arc: chain restore, one pinch per level, scrolling, back (button,
 // swipe, header, crumbs), previews, persistence, commands.
+import type * as THREE from 'three';
 import { expect, it, vi } from 'vitest';
 import explorer, { age, arcPlace, baseName, chainFor, findEntry, iconFor, joinPath, metaLabel, type Entry } from '../widgets/explorer/widget.ts';
 import { mount, type Harness } from './harness.ts';
@@ -100,7 +101,7 @@ it('one pinch per level, slides old columns into crumbs, back by button / swipe 
       const [, v, r] = o.name.split(':').map(Number);
       // find the view whose names text lists `name` at row r
       const g = o.parent!;
-      const names = g.children.find((c) => (c as unknown as { text?: string }).text?.includes(name) && (c as unknown as { anchorY?: string }).anchorY === 'top' && (c as unknown as { anchorX?: string }).anchorX === 'left') as unknown as { text: string } | undefined;
+      const names = g.children.find((c) => c.visible && (c as unknown as { text?: string }).text?.includes(name) && (c as unknown as { anchorY?: string }).anchorY === 'top' && (c as unknown as { anchorX?: string }).anchorX === 'left') as unknown as { text: string } | undefined;
       if (names && names.text.split('\n')[r] === name && v >= 0) return o.name;
     }
     throw new Error(`no row ${name}`);
@@ -140,21 +141,32 @@ it('one pinch per level, slides old columns into crumbs, back by button / swipe 
   h.dispose();
 });
 
+/** The visible names text of view `v` and the entry index at the list's top edge (its first line + the rows it is lifted by). */
+function namesOf(h: Awaited<ReturnType<typeof mount>>, v: string) {
+  return (h.root.getObjectsByProperty('anchorY', 'top') as unknown as Array<THREE.Object3D & { text: string; clipRect: number[] | null; anchorX: string }>)
+    .find((t) => t.visible && t.anchorX === 'left' && t.text?.startsWith('f') && t.parent === h.part(`row:${v}:1`).parent)!;
+}
+/** Entry index at the list's top edge: the visible window's first entry + the rows it is lifted by (`top0`: its y unscrolled). */
+function firstVisible(h: Awaited<ReturnType<typeof mount>>, v: string, top0: number): number {
+  const t = namesOf(h, v);
+  return Number(t.text.slice(1, 3)) + (t.position.y - top0) / 0.036;
+}
+
 it('scrolls with pinch-drag (no tap), ignores cancelled presses', async () => {
   const many = Array.from({ length: 40 }, (_, i) => `f${String(i).padStart(2, '0')}.txt`).join(' ');
   const h = await mount(explorer, { path: '/data', rows: 8 });
   for (const r of requests(h)) answer(h, r, r.path === '/data' ? many : 'data/');
   h.frame(40);
   expect(h.hasText('f00.txt')).toBe(true);
-  expect(h.hasText('f20.txt')).toBe(false);
   // the deepest column (the one with 8 live rows) lists f00…f07
   const views = h.liveParts().filter((o) => o.name.startsWith('row:') && o.name.endsWith(':0')).map((o) => o.name.split(':')[1]);
   const v = views.find((vv) => h.liveParts().some((o) => o.name === `row:${vv}:7`))!;
   const before = requests(h).length;
+  const top0 = namesOf(h, v).position.y;
   h.drag(`row:${v}:0`, [0, 0.036 * 12, 0], { steps: 6 });
-  h.frame();
+  h.frame(3);
   expect(h.hasText('f12.txt')).toBe(true);
-  expect(h.hasText('f00.txt')).toBe(false);
+  expect(firstVisible(h, v, top0)).toBeGreaterThan(9); // ≈ 12 rows minus the tap threshold
   expect(requests(h).length).toBe(before); // a drag is not a tap
   h.interact({ handler: 'drag', phase: 'start', objectName: `row:${v}:0`, localPoint: h.partPosition(`row:${v}:0`) });
   h.interact({ handler: 'drag', phase: 'cancel', objectName: `row:${v}:0`, localPoint: h.partPosition(`row:${v}:0`) });
@@ -170,9 +182,11 @@ it('scrolls smoothly: rows follow the hand to fractional offsets (edges clipped)
     for (const r of requests(h)) answer(h, r, r.path === '/data' ? many : 'data/');
     h.frame(40);
     const v = h.liveParts().filter((o) => o.name.startsWith('row:') && o.name.endsWith(':7')).map((o) => o.name.split(':')[1])[0];
-    const namesText = () => (h.root.getObjectsByProperty('anchorY', 'top') as unknown as Array<{ text: string; parent: unknown; clipRect: number[] | null }>)
-      .find((t) => t.text?.startsWith('f') && t.parent === h.part(`row:${v}:1`).parent)!;
+    const namesText = () => namesOf(h, v);
     const ROW = 0.036;
+    const textBefore = namesText();
+    const stringBefore = textBefore.text;
+    const top0 = textBefore.position.y;
     const p0 = h.partPosition(`row:${v}:2`);
     const at = (dy: number) => [p0[0], p0[1] + dy, p0[2]] as [number, number, number];
     // slow drag: past the tap threshold, then 1.5 rows (the threshold itself doesn't move the content)
@@ -184,13 +198,15 @@ it('scrolls smoothly: rows follow the hand to fractional offsets (edges clipped)
     h.interact({ handler: 'drag', phase: 'end', objectName: `row:${v}:2`, localPoint: at(0.02 + 1.5 * ROW) });
     h.frame();
     const t = namesText();
-    expect(t.text.split('\n')).toEqual(Array.from({ length: 9 }, (_, i) => `f${String(i + 1).padStart(2, '0')}.txt`)); // f01 half out at the top … f09 half in at the bottom
-    expect(t.clipRect).not.toBeNull(); // clipped to the list area
+    // the over-scan window scrolls by moving: same text object, same string (no re-layout flicker), 1.5 rows up
+    expect(t).toBe(textBefore);
+    expect(t.text).toBe(stringBefore);
+    expect(firstVisible(h, v, top0)).toBeCloseTo(1.5, 3); // f01 half out at the top … f09 half in at the bottom
     const top = h.part(`row:${v}:0`), bottom = h.part(`row:${v}:8`);
     expect(top.scale.y).toBeCloseTo(ROW / 2, 4); // the hit boxes cover only the visible halves
     expect(bottom.scale.y).toBeCloseTo(ROW / 2, 4);
     h.frame(30);
-    expect(namesText().text.startsWith('f01.txt')).toBe(true); // a slow release doesn't glide
+    expect(firstVisible(h, v, top0)).toBeCloseTo(1.5, 3); // a slow release doesn't glide
     // a quick flick: the list keeps moving after release, then settles
     h.interact({ handler: 'drag', phase: 'start', objectName: `row:${v}:4`, localPoint: at(0) });
     for (let i = 1; i <= 5; i++) {
@@ -199,9 +215,9 @@ it('scrolls smoothly: rows follow the hand to fractional offsets (edges clipped)
     }
     h.interact({ handler: 'drag', phase: 'end', objectName: `row:${v}:4`, localPoint: at(0.02 + 5 * ROW) });
     h.frame();
-    const atRelease = Number(namesText().text.slice(1, 3));
+    const atRelease = firstVisible(h, v, top0);
     h.frame(72);
-    const after = Number(namesText().text.slice(1, 3));
+    const after = firstVisible(h, v, top0);
     expect(after).toBeGreaterThan(atRelease + 3);
     expect(h.rec.errors).toEqual([]);
     h.dispose();
@@ -241,6 +257,30 @@ it('previews files with syntax highlighting, persists the file, closes, asks Cla
   expect(h.rec.errors).toEqual([]);
   h.dispose();
   expect(h.rec.afterDispose).toEqual([]);
+});
+
+it('preview text scrolls without re-laying out the text (over-scan window), refills off screen far away', async () => {
+  const h = await mount(explorer, { path: '~/git projects/EvolSpace/library/widgets/gauge' });
+  serve(h);
+  const v = h.liveParts().find((o) => o.name.startsWith('row:') && (o.parent!.children.some((c) => (c as unknown as { text?: string }).text === 'widget.ts')))!;
+  h.press(v.name, 'drag');
+  const pr = lastReq(h, 'preview');
+  const text = Array.from({ length: 300 }, (_, i) => `const v${i} = ${i};`).join('\n');
+  h.publish(pr.reply, { kind: 'preview', path: pr.path, name: 'widget.ts', size: 4000, mtime: Date.now(), type: 'text', text, lines: 300, nonce: pr.nonce });
+  h.frame(40);
+  const shownBody = () => h.texts.find((t) => t.text.startsWith('const v') && h.live(t))!;
+  const b0 = shownBody(), s0 = b0.text, y0 = b0.position.y;
+  const LH = 0.011 * 1.3; // CODE * CODE_LH
+  h.drag('pv:text', [0, 4 * LH, 0], { steps: 4 });
+  h.frame(2);
+  expect(shownBody()).toBe(b0); // a few lines: the same text, same string, just moved
+  expect(shownBody().text).toBe(s0);
+  expect(shownBody().position.y).toBeGreaterThan(y0);
+  h.drag('pv:text', [0, 80 * LH, 0], { steps: 8 });
+  h.frame(4);
+  expect(shownBody().text.startsWith('const v0 ')).toBe(false); // far away: the other buffer was filled and swapped in
+  expect(h.rec.errors).toEqual([]);
+  h.dispose();
 });
 
 it('restores a persisted file preview and handles commands, props and errors', async () => {
