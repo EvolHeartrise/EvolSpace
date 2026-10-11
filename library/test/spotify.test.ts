@@ -104,3 +104,23 @@ it('after a skip, audio from before the jump (older generation) is dropped', asy
   expect(chunkOf(chunk(7) as never)).toEqual({ gen: 7, pcm: new Int16Array([1, 2, 3, 4]) });
   expect(chunkOf({ $tensor: true, dtype: 'i16', shape: [2], data: new Int16Array([1, 2]) } as never)).toBeNull(); // untagged
 });
+
+it('seeking: the bar stays where it was dropped until the source reports the new position', async () => {
+  const h = await mount(spotify, {});
+  const now = Date.now();
+  h.publish('spotify.state', { ...ready, paused: true, position: 10_000, positionAt: now });
+  h.frame(3);
+  expect(h.hasText('0:10')).toBe(true);
+  const bar = h.part('progress');
+  const { x0, w } = bar.userData as { x0: number; w: number };
+  h.drag('progress', [0, 0, 0], { from: [x0 + w * 0.502, bar.position.y, 0] }); // drop at 50% = 2:40
+  h.frame();
+  expect(h.hasText('2:40')).toBe(true);
+  h.publish('spotify.state', { ...ready, paused: true, position: 10_000, positionAt: Date.now() }); // a stale refresh
+  h.frame();
+  expect(h.hasText('2:40')).toBe(true); // not snapped back
+  h.publish('spotify.state', { ...ready, paused: true, position: 160_000, positionAt: Date.now() });
+  h.frame();
+  expect(h.hasText('2:40')).toBe(true);
+  h.dispose();
+});

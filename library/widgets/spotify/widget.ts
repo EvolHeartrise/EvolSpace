@@ -162,6 +162,20 @@ const definition: WidgetDefinition<Props> = {
       player?.flush();
       if (lastGen >= 0) awaitGen = { from: lastGen, until: Date.now() + 2500 };
     }
+    /** Where the user just seeked/skipped to, shown until the source reports the new position. */
+    let optimisticPos: { pos: number; at: number; uri: string } | null = null;
+    function shownPosition(): number {
+      if (optimisticPos) {
+        const expected = optimisticPos.pos + (pausedNow() ? 0 : Date.now() - optimisticPos.at);
+        // Confirmed once a state newer than the seek reports (about) the new position — a refresh that
+        // raced the seek and still shows the old position doesn't count.
+        const confirmed = !!st?.positionAt && st.positionAt >= optimisticPos.at && st.track?.uri === optimisticPos.uri
+          && Math.abs(positionNow(st) - expected) < 2500;
+        if (confirmed || Date.now() - optimisticPos.at > 4000) optimisticPos = null;
+        else return expected;
+      }
+      return positionNow(st);
+    }
     let optimisticLiked: { uri: string; v: boolean; until: number } | null = null;
     const listScroll = new SmoothScroll();
 
@@ -660,7 +674,7 @@ const definition: WidgetDefinition<Props> = {
       const t = st?.track;
       const d = N.progress.userData as { x0: number; w: number };
       const dur = t?.duration ?? 0;
-      const pos = dragSeek ?? positionNow(st);
+      const pos = dragSeek ?? shownPosition();
       const f = dur > 0 ? Math.max(0, Math.min(1, pos / dur)) : 0;
       barFill!.scale.x = Math.max(0.0001, d.w * f);
       barFill!.position.x = d.x0 + (d.w * f) / 2;
@@ -776,7 +790,11 @@ const definition: WidgetDefinition<Props> = {
         const d = drag;
         drag = null;
         if (d.part === 'progress') {
-          if (e.phase === 'end' && dragSeek !== null) { request({ cmd: 'seek', position: dragSeek }); jumped(); }
+          if (e.phase === 'end' && dragSeek !== null) {
+            request({ cmd: 'seek', position: dragSeek });
+            jumped();
+            optimisticPos = { pos: dragSeek, at: Date.now(), uri: st?.track?.uri ?? '' };
+          }
           dragSeek = null;
           progressDirty = true;
           return;
