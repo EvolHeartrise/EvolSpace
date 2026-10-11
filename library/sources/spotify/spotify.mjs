@@ -14,7 +14,9 @@
 //                      error?, device, track?: {uri, name, artists[], album, albumUri, cover, duration},
 //                      position, positionAt, paused, stopped, buffering, volume (0–100), shuffle,
 //                      repeatContext, repeatTrack, contextUri, contextName, liked?}
-//   <P>.audio.stream  PCM chunks: i16 tensor [samples], interleaved stereo 44.1 kHz, 100 ms each, in order
+//   <P>.audio.stream  PCM chunks: i16 tensor [2 + samples]: [PCM_MAGIC, generation, …interleaved stereo 44.1 kHz,
+//                     100 ms], in order. The generation goes up on every skip / play / seek: everything older
+//                     is audio from before the jump, which the widget drops.
 //   <P>.search        {query, at, tracks[], albums[], artists[], playlists[]} (latest search; Item below)
 //   <P>.request  ←    {cmd: 'play', uri, skipTo?} | resume | pause | playpause | next | prev | {cmd: 'seek', position} |
 //                     {cmd: 'volume', volume} | {cmd: 'shuffle', on} | {cmd: 'repeat', mode: off|context|track} |
@@ -66,8 +68,15 @@ async function publish(channel, value) {
 }
 
 let pcmChain = Promise.resolve();
-/** Publish one PCM chunk (in order: chained). */
-function publishPcm(buf) {
+export const PCM_MAGIC = 0x5350; // 'SP'
+/** Audio generation: bumped by jumps (skip, play, seek); see <P>.audio.stream. */
+let gen = 0;
+/** Publish one PCM chunk (in order: chained), tagged with the current generation. */
+function publishPcm(pcm) {
+  const buf = Buffer.allocUnsafe(pcm.length + 4);
+  buf.writeInt16LE(PCM_MAGIC, 0);
+  buf.writeInt16LE(gen, 2);
+  pcm.copy(buf, 4);
   pcmChain = pcmChain.then(async () => {
     try {
       await fetch(`${EVOL}/api/channels/${encodeURIComponent(`${P}.audio.stream`)}?producer=spotify`, {
@@ -241,6 +250,20 @@ async function api(method, p, body) {
  */
 const gate = { open: true, apply: () => {} };
 
+/**
+ * A jump (skip, play, seek): the pipe still holds up to a full buffer of the old position's audio
+ * (the player blocks on it while we pace), so drop that much and start a new generation.
+ */
+const PIPE_BYTES = 65536;
+let discard = 0;
+let resetReader = () => {};
+function jump() {
+  gen = (gen + 1) & 0x7fff;
+  discard = PIPE_BYTES;
+  resetReader();
+  setState({ gen });
+}
+
 function readAudio() {
   // Opening a FIFO for reading blocks until the player opens it for writing (on first play).
   const stream = fs.createReadStream(FIFO, { highWaterMark: CHUNK });
@@ -253,7 +276,14 @@ function readAudio() {
   let t0 = 0; // wall clock of the stream's sample 0 (re-anchored after gaps)
   let sent = 0; // bytes sent since t0
   let resumeTimer = null;
+  resetReader = () => { pending = Buffer.alloc(0); t0 = 0; };
   stream.on('data', (data) => {
+    if (discard > 0) {
+      const n = Math.min(discard, data.length);
+      discard -= n;
+      data = data.subarray(n);
+      if (!data.length) return;
+    }
     pending = pending.length ? Buffer.concat([pending, data]) : data;
     const now = Date.now();
     // A gap (pause, track loading): start a new real-time anchor.
@@ -460,6 +490,7 @@ async function onRequest(req) {
   if (!req || typeof req !== 'object') return;
   const reply = typeof req.reply === 'string' && req.reply.startsWith(`${P}.`) ? (v) => publish(req.reply, { nonce: req.nonce ?? null, ...v }) : null;
   try {
+    if (['play', 'next', 'prev', 'seek'].includes(req.cmd)) jump();
     switch (req.cmd) {
       case 'play': {
         if (!/^spotify:/.test(String(req.uri ?? ''))) throw new Error('play needs a spotify: uri');

@@ -103,14 +103,16 @@ class PcmPlayer {
   close(): void { this.flush(); void this.ctx.close().catch(() => {}); }
 }
 
-function pcmOf(v: ChannelValue): Int16Array | null {
+const PCM_MAGIC = 0x5350;
+
+/** A stream chunk: [PCM_MAGIC, generation, …interleaved PCM] (see the spotify source). */
+export function chunkOf(v: ChannelValue): { gen: number; pcm: Int16Array } | null {
   const t = v as { $tensor?: boolean; dtype?: string; data?: unknown };
   if (!t || !t.$tensor || t.dtype !== 'i16') return null;
   const d = t.data;
-  if (d instanceof Int16Array) return d;
-  if (d instanceof Uint8Array) return new Int16Array(d.buffer, d.byteOffset, d.byteLength >> 1);
-  if (d instanceof ArrayBuffer) return new Int16Array(d);
-  return null;
+  const a = d instanceof Int16Array ? d : d instanceof Uint8Array ? new Int16Array(d.buffer, d.byteOffset, d.byteLength >> 1) : d instanceof ArrayBuffer ? new Int16Array(d) : null;
+  if (!a || a.length < 2 || a[0] !== PCM_MAGIC) return null;
+  return { gen: a[1], pcm: a.subarray(2) };
 }
 
 const definition: WidgetDefinition<Props> = {
@@ -152,6 +154,14 @@ const definition: WidgetDefinition<Props> = {
     let dragSeek: number | null = null; // ms while dragging the progress bar
     let dragVol: number | null = null;
     let optimisticPaused: { v: boolean; until: number } | null = null;
+    /** Generation of the last chunk played, and (after this client jumped) the one to wait past. */
+    let lastGen = -1;
+    let awaitGen: { from: number; until: number } | null = null;
+    /** A skip / play / seek from here: silence at once and ignore the old position's audio still in flight. */
+    function jumped(): void {
+      player?.flush();
+      if (lastGen >= 0) awaitGen = { from: lastGen, until: Date.now() + 2500 };
+    }
     let optimisticLiked: { uri: string; v: boolean; until: number } | null = null;
     const listScroll = new SmoothScroll();
 
@@ -186,8 +196,15 @@ const definition: WidgetDefinition<Props> = {
         offAudio = ctx.channels.subscribe(`${prefix()}.audio.stream`, (v) => {
           // Chunks still in flight when playback pauses must not play after the pause.
           if (initial || pausedNow()) return;
-          const pcm = pcmOf(v);
-          if (pcm) player?.push(pcm);
+          const c = chunkOf(v);
+          if (!c) return;
+          // After a skip / seek: drop audio from before the jump until the new generation arrives.
+          if (awaitGen && Date.now() < awaitGen.until) {
+            if (c.gen === awaitGen.from) return;
+            awaitGen = null;
+          }
+          lastGen = c.gen;
+          player?.push(c.pcm);
         });
         initial = false;
       } else if (!want && offAudio) {
@@ -669,8 +686,8 @@ const definition: WidgetDefinition<Props> = {
           if (!paused) player?.flush();
           break;
         }
-        case 'prev': request({ cmd: 'prev' }); player?.flush(); break;
-        case 'next': request({ cmd: 'next' }); player?.flush(); break;
+        case 'prev': request({ cmd: 'prev' }); jumped(); break;
+        case 'next': request({ cmd: 'next' }); jumped(); break;
         case 'shuffle': request({ cmd: 'shuffle', on: !st?.shuffle }); break;
         case 'repeat': request({ cmd: 'repeat', mode: st?.repeatTrack ? 'off' : st?.repeatContext ? 'track' : 'context' }); break;
         case 'like':
@@ -683,7 +700,7 @@ const definition: WidgetDefinition<Props> = {
         case 'back': open = null; listScroll.scrollTo(0, false); break;
         case 'playctx': {
           const uri = open?.uri ?? (ctx.props.tab === 'liked' ? 'spotify:collection:tracks' : '');
-          if (uri) request({ cmd: 'play', uri });
+          if (uri) { request({ cmd: 'play', uri }); jumped(); }
           break;
         }
         default:
@@ -702,13 +719,14 @@ const definition: WidgetDefinition<Props> = {
               // play it within what it was listed in (playlist / album / liked), else its album
               const context = open?.uri ?? (ctx.props.tab === 'liked' ? 'spotify:collection:tracks' : it.context);
               request(context ? { cmd: 'play', uri: context, skipTo: it.uri } : { cmd: 'play', uri: it.uri });
-              player?.flush();
+              jumped();
             } else if (it.kind === 'collection') {
               ctx.setProps({ tab: 'liked' });
               if (!liked) loadTracks('spotify:collection:tracks');
               listScroll.scrollTo(0, false);
             } else if (it.kind === 'artist') {
               request({ cmd: 'play', uri: it.uri });
+              jumped();
             } else {
               open = { uri: it.uri, name: it.name, items: null };
               listScroll.scrollTo(0, false);
@@ -758,7 +776,7 @@ const definition: WidgetDefinition<Props> = {
         const d = drag;
         drag = null;
         if (d.part === 'progress') {
-          if (e.phase === 'end' && dragSeek !== null) { request({ cmd: 'seek', position: dragSeek }); player?.flush(); }
+          if (e.phase === 'end' && dragSeek !== null) { request({ cmd: 'seek', position: dragSeek }); jumped(); }
           dragSeek = null;
           progressDirty = true;
           return;
