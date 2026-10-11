@@ -10,7 +10,7 @@ const items = Array.from({ length: 14 }, (_, i) => ({
 it('shows rows, tabs with counts, filters by tab and selects a row', async () => {
   const h = await mount(itemList, { channel: 'gh.prs', rows: 5 });
   h.publish('gh.prs', { title: 'Repo · Pull requests', updatedAt: new Date().toISOString(), items });
-  h.frame();
+  h.frame(3);
   expect(h.hasText('Repo · Pull requests')).toBe(true);
   expect(h.hasText('#100  Item 0')).toBe(true);
   expect(h.hasText('OPEN · meta 0 · bug')).toBe(true);
@@ -20,7 +20,7 @@ it('shows rows, tabs with counts, filters by tab and selects a row', async () =>
   expect(h.hasText('#95  Item 5')).toBe(false); // only 5 rows visible
 
   h.press('tab:2', 'drag'); // Merged
-  h.frame();
+  h.frame(3);
   expect(h.rec.setProps.at(-1)).toEqual({ filter: 'merged' });
   expect(h.hasText('#97  Item 3')).toBe(true);
   expect(h.hasText('#100  Item 0')).toBe(false);
@@ -36,14 +36,14 @@ it('shows rows, tabs with counts, filters by tab and selects a row', async () =>
 it('pinch-dragging the rows scrolls; bad data reports an error and keeps the list', async () => {
   const h = await mount(itemList, { rows: 4 });
   h.input('items', items);
-  h.frame();
+  h.frame(3);
   expect(h.hasText('#100  Item 0')).toBe(true);
   h.drag('row:2', [0, 0.5, 0]); // drag up → later items (clamped at the end)
-  h.frame();
+  h.frame(3);
   expect(h.hasText('#100  Item 0')).toBe(false);
   expect(h.emitsOn('select')).toEqual([]); // a scroll is not a selection
   h.input('items', 42);
-  h.frame();
+  h.frame(3);
   expect(h.rec.errors.length).toBe(1);
   expect(h.hasText('#90  Item 10')).toBe(true);
   h.dispose();

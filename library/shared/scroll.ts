@@ -4,6 +4,10 @@
 //                   flick and decelerates (iOS-style friction), eases to scrollTo() targets, and
 //                   stays within [0, max]. Unit-agnostic: rows, lines or meters — the widget converts
 //                   hand travel into its unit.
+//   TextSync        rows without flicker: troika lays text out asynchronously, so after .set() a text keeps
+//                   drawing its OLD string for a frame or two. Pooled rows therefore keep their item while it
+//                   stays in view (ring slots: item i always uses slot i % slots) and a slot that takes a new
+//                   item stays hidden until its texts are laid out (TextSync.ready()).
 //   ScrollViewport  the clipping: rows that are only partly inside the scroll area are cut exactly at
 //                   its edges — meshes through two clipping planes (shared materials are cloned once),
 //                   troika texts through clipRect — and invisible hit targets are trimmed to the
@@ -252,4 +256,39 @@ export class ScrollViewport {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+interface SyncText { set(s: string): void }
+const textOf = (t: SyncText): string => (t as unknown as { text?: string }).text ?? '';
+const infoOf = (t: SyncText): unknown => (t as unknown as { textRenderInfo?: unknown }).textRenderInfo;
+
+/**
+ * Tracks whether texts given new strings have been laid out by troika yet. One per pooled row (slot):
+ * set() its texts through it when the slot takes a new item, show the slot once ready().
+ */
+export class TextSync {
+  private pending: Array<{ t: SyncText; info: unknown }> = [];
+  private frames = 0;
+  constructor(private readonly maxFrames = 6) {}
+
+  /** Set `t` to `s`; if that changes what it shows, wait for its layout. Returns whether it changed. */
+  set(t: SyncText, s: string): boolean {
+    const before = textOf(t);
+    const info = infoOf(t);
+    t.set(s);
+    if (textOf(t) === before) return false; // same (sanitized) string: nothing to lay out
+    if (!this.pending.some((p) => p.t === t)) this.pending.push({ t, info });
+    this.frames = 0;
+    return true;
+  }
+
+  /** All texts set since the last ready() === true have been laid out (or gave up after maxFrames frames). Call once per frame. */
+  ready(): boolean {
+    if (!this.pending.length) return true;
+    this.frames++;
+    if (this.frames > this.maxFrames || this.pending.every((p) => infoOf(p.t) !== p.info)) { this.pending.length = 0; return true; }
+    return false;
+  }
+
+  get waiting(): boolean { return this.pending.length > 0; }
 }

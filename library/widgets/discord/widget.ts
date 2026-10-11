@@ -28,7 +28,7 @@ import { truncate } from '../../shared/format.ts';
 import { estimateTextBlock } from '../../shared/layout.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { makeIcon, setIcon } from '../../shared/icons.ts';
-import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
+import { ScrollViewport, SmoothScroll, TextSync } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   channelId: string;
@@ -225,6 +225,8 @@ const definition: WidgetDefinition<Props> = {
     interface PickSlot {
       g: THREE.Group; icon: THREE.Mesh; disc: THREE.Mesh; discMat: THREE.MeshBasicMaterial; initials: Text; label: Text; header: Text;
       pill: THREE.Mesh; badge: THREE.Mesh; badgeText: Text;
+      /** Item i always uses slot i % slots (keeps its texts while in view); hidden while new texts lay out. */
+      idx: number; key: string; sync: TextSync; hold: boolean;
     }
     let group: THREE.Group | null = null;
     let backBtn: THREE.Mesh | null = null;
@@ -403,7 +405,7 @@ const definition: WidgetDefinition<Props> = {
         rg.visible = false;
         g.add(rg);
         pickViewport.add(rg);
-        pickRows.push({ g: rg, icon, disc: d.m, discMat: d.mat, initials: ini, label, header, pill, badge, badgeText });
+        pickRows.push({ g: rg, icon, disc: d.m, discMat: d.mat, initials: ini, label, header, pill, badge, badgeText, idx: -1, key: '', sync: new TextSync(), hold: false });
       }
 
       track = plane(DC.side, 8 * P, L.headerBottom - L.inputTop - 8 * P, L.w / 2 - 8 * P, (L.headerBottom + L.inputTop) / 2, Z.content);
@@ -727,17 +729,26 @@ const definition: WidgetDefinition<Props> = {
       const areaTop = L.headerBottom - 8 * P;
       pickScroll.setMax(pickItems.length - (areaTop - L.bottom - 8 * P) / L.rowH);
       const first = Math.floor(pickScroll.pos);
-      const frac = pickScroll.pos - first;
+      const last = Math.min(pickItems.length - 1, first + L.pickN);
       const chars = Math.max(8, Math.floor((L.w - 110 * P) / (16 * P * 0.5)));
-      for (let r = 0; r <= L.pickN; r++) {
-        const p = pickRows[r], it = pickItems[first + r];
-        p.g.position.y = areaTop - (r + 0.5 - frac) * L.rowH;
-        p.g.visible = !!it;
-        if (!it) continue;
+      const listKey = pickView || 'home';
+      for (const p of pickRows) if (p.idx < first || p.idx > last || !p.key.startsWith(listKey + ':')) { p.g.visible = false; p.idx = -1; p.key = ''; }
+      for (let i = first; i <= last; i++) {
+        const p = pickRows[i % pickRows.length], it = pickItems[i];
+        p.g.position.y = areaTop - (i - pickScroll.pos + 0.5) * L.rowH;
+        const key = `${listKey}:${i}:${it.key}:${it.label}`;
+        if (p.key !== key) p.hold = true; // entering: hidden until its texts are laid out
+        p.idx = i;
+        p.key = key;
         p.header.visible = !!it.header;
         p.label.visible = !it.header;
-        p.header.set(it.header ? truncate(it.label, chars) : '');
-        if (it.header) { p.disc.visible = p.icon.visible = p.initials.visible = p.pill.visible = p.badge.visible = false; continue; }
+        p.sync.set(p.header, it.header ? truncate(it.label, chars) : '');
+        if (it.header) {
+          p.disc.visible = p.icon.visible = p.initials.visible = p.pill.visible = p.badge.visible = false;
+          if (p.sync.ready()) p.hold = false; else dirty = true;
+          p.g.visible = !p.hold;
+          continue;
+        }
         // icon: server / DM picture (initials on blurple until it loads, or without one), else a glyph
         const isPicture = it.image !== undefined;
         p.disc.visible = isPicture;
@@ -745,13 +756,15 @@ const definition: WidgetDefinition<Props> = {
         p.icon.visible = !isPicture;
         if (isPicture) {
           setMap(p.discMat, it.image || undefined);
-          p.initials.set(initials(it.label));
+          p.sync.set(p.initials, initials(it.label));
         } else setIcon(T, p.icon, it.icon);
-        p.label.set(truncate(it.label, chars));
+        p.sync.set(p.label, truncate(it.label, chars));
         (p.label as unknown as { color: unknown }).color = it.unread || it.mentions ? DC.head : it.muted ? DC.faint : DC.channel;
         p.pill.visible = it.unread;
         p.badge.visible = it.mentions > 0;
-        if (it.mentions > 0) p.badgeText.set(it.mentions > 99 ? '99+' : String(it.mentions));
+        if (it.mentions > 0) p.sync.set(p.badgeText, it.mentions > 99 ? '99+' : String(it.mentions));
+        if (p.sync.ready()) p.hold = false; else dirty = true;
+        p.g.visible = !p.hold;
       }
     }
 
@@ -778,7 +791,8 @@ const definition: WidgetDefinition<Props> = {
         return;
       }
       if (part.startsWith('pick:')) {
-        const it = pickItems[Math.floor(pickScroll.pos) + Number(part.slice(5))];
+        const slot = pickRows[Number(part.slice(5))];
+        const it = slot && slot.idx >= 0 ? pickItems[slot.idx] : undefined;
         if (!it || it.header) return;
         if (it.key.startsWith('view:')) { pickView = it.key.slice(5); pickStale = true; pickScroll.scrollTo(0, false); dirty = true; }
         else open(it.key);

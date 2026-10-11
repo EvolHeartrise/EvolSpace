@@ -21,7 +21,7 @@ import { hexToInt } from '../../shared/color.ts';
 import { truncate } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { makeIcon, setIcon } from '../../shared/icons.ts';
-import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
+import { ScrollViewport, SmoothScroll, TextSync } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   prefix: string;
@@ -35,6 +35,8 @@ interface State {
   auth: string; login?: { url?: string; code?: string } | null; error?: string; device?: string;
   track?: Track; position?: number; positionAt?: number; paused?: boolean; stopped?: boolean; buffering?: boolean;
   volume?: number; shuffle?: boolean; repeatContext?: boolean; repeatTrack?: boolean; contextUri?: string; contextName?: string;
+  /** The current track is in Liked Songs. */
+  liked?: boolean;
 }
 interface Item { uri: string; kind: string; name: string; sub: string; image?: string; duration?: number; context?: string }
 
@@ -150,6 +152,7 @@ const definition: WidgetDefinition<Props> = {
     let dragSeek: number | null = null; // ms while dragging the progress bar
     let dragVol: number | null = null;
     let optimisticPaused: { v: boolean; until: number } | null = null;
+    let optimisticLiked: { uri: string; v: boolean; until: number } | null = null;
     const listScroll = new SmoothScroll();
 
     // ---- audio output: one client plays
@@ -162,6 +165,12 @@ const definition: WidgetDefinition<Props> = {
     function pausedNow(): boolean {
       if (optimisticPaused && optimisticPaused.until > Date.now()) return optimisticPaused.v;
       return !!(st?.paused || st?.stopped);
+    }
+    /** The like button's state: the user's own tap counts until the source confirms it. */
+    function likedNow(): boolean {
+      const uri = st?.track?.uri;
+      if (optimisticLiked && optimisticLiked.uri === uri && optimisticLiked.until > Date.now()) return optimisticLiked.v;
+      return !!st?.liked;
     }
     function claimOutput(): void {
       if (ctx.isMirror || !me() || output === me()) return;
@@ -216,12 +225,14 @@ const definition: WidgetDefinition<Props> = {
     }
 
     // ---- built parts
-    interface Row { g: THREE.Group; art: THREE.Mesh; artMat: THREE.MeshBasicMaterial; icon: THREE.Mesh; name: Text; sub: Text; dur: Text }
+    /** Pooled list rows; item i always uses slot i % slots, so it keeps its texts while in view (no re-layout flicker). */
+    interface Row { g: THREE.Group; art: THREE.Mesh; artMat: THREE.MeshBasicMaterial; icon: THREE.Mesh; name: Text; sub: Text; dur: Text; idx: number; key: string; sync: TextSync; hold: boolean }
     let group: THREE.Group | null = null;
     const N: Record<string, THREE.Object3D> = {};
     let artMat: THREE.MeshBasicMaterial | null = null;
     let title: Text | null = null, artists: Text | null = null, tCur: Text | null = null, tDur: Text | null = null, outText: Text | null = null;
     let barFill: THREE.Mesh | null = null, knob: THREE.Mesh | null = null, volFill: THREE.Mesh | null = null, volKnob: THREE.Mesh | null = null;
+    let likeFill: THREE.Mesh | null = null;
     let playIcon: THREE.Mesh | null = null, shuffleIcon: THREE.Mesh | null = null, repeatIcon: THREE.Mesh | null = null, likeIcon: THREE.Mesh | null = null;
     let libTitle: Text | null = null, libBack: THREE.Mesh | null = null, libPlay: THREE.Mesh | null = null, libEmpty: Text | null = null;
     const chips: Array<{ key: string; plate: THREE.Mesh; mat: THREE.MeshBasicMaterial; text: Text }> = [];
@@ -299,6 +310,21 @@ const definition: WidgetDefinition<Props> = {
       title = makeText(ctx, '', { size: 18 * P, anchorX: 'left', anchorY: 'top', color: SP.text, weight: 'semibold', whiteSpace: 'nowrap' });
       title.position.set(tx, y, Z.text);
       likeIcon = icon('heart', 18 * P, SP.sub, L.x0 + L.leftW - pad - 9 * P, y - 11 * P);
+      // Spotify's liked heart is filled: a heart shape under the outline icon, shown when liked.
+      const hs = new T.Shape();
+      hs.moveTo(0, -0.42);
+      hs.bezierCurveTo(-0.08, -0.34, -0.5, -0.06, -0.5, 0.16);
+      hs.bezierCurveTo(-0.5, 0.38, -0.3, 0.46, -0.18, 0.46);
+      hs.bezierCurveTo(-0.08, 0.46, -0.02, 0.4, 0, 0.32);
+      hs.bezierCurveTo(0.02, 0.4, 0.08, 0.46, 0.18, 0.46);
+      hs.bezierCurveTo(0.3, 0.46, 0.5, 0.38, 0.5, 0.16);
+      hs.bezierCurveTo(0.5, -0.06, 0.08, -0.34, 0, -0.42);
+      likeFill = new T.Mesh(new T.ShapeGeometry(hs, 12), ownMaterial(T, SP.green));
+      likeFill.scale.setScalar(17 * P);
+      likeFill.position.set(likeIcon.position.x, likeIcon.position.y - 0.4 * P, Z.over);
+      likeFill.raycast = () => {};
+      likeFill.visible = false;
+      g.add(likeFill);
       hit('like', 28 * P, 28 * P, likeIcon.position.x, likeIcon.position.y);
       y -= 22 * P + 2 * P;
       artists = makeText(ctx, '', { size: 14 * P, anchorX: 'left', anchorY: 'top', color: SP.sub, whiteSpace: 'nowrap' });
@@ -428,7 +454,7 @@ const definition: WidgetDefinition<Props> = {
         rg.visible = false;
         g.add(rg);
         view.add(rg);
-        rows.push({ g: rg, art: a, artMat: am, icon: ic, name, sub, dur });
+        rows.push({ g: rg, art: a, artMat: am, icon: ic, name, sub, dur, idx: -1, key: '', sync: new TextSync(), hold: false });
       }
 
       // ---------- sign-in overlay
@@ -549,6 +575,8 @@ const definition: WidgetDefinition<Props> = {
       artists!.set(truncate(t ? t.artists.join(', ') : st?.contextName || 'Pick something from your library', 34));
       const paused = optimisticPaused && optimisticPaused.until > Date.now() ? optimisticPaused.v : !!(st?.paused || st?.stopped || !t);
       setIcon(T, playIcon!, paused ? 'play' : 'pause');
+      (likeIcon!.material as THREE.MeshBasicMaterial).color.set(likedNow() ? SP.green : SP.sub);
+      likeFill!.visible = likedNow();
       (shuffleIcon!.material as THREE.MeshBasicMaterial).color.set(st?.shuffle ? SP.green : SP.sub);
       setIcon(T, repeatIcon!, st?.repeatTrack ? 'repeat-1' : 'repeat');
       (repeatIcon!.material as THREE.MeshBasicMaterial).color.set(st?.repeatContext || st?.repeatTrack ? SP.green : SP.sub);
@@ -581,21 +609,30 @@ const definition: WidgetDefinition<Props> = {
       libEmpty!.set(items.length ? '' : empty);
       libEmpty!.visible = !items.length;
       listScroll.setMax(items.length - (L.listTop - L.listBottom) / L.rowH);
-      const first = Math.floor(listScroll.pos), frac = listScroll.pos - first;
-      for (let r = 0; r <= L.n; r++) {
-        const row = rows[r], it = items[first + r];
-        row.g.visible = !!it;
-        if (!it) continue;
-        row.g.position.y = L.listTop - (r + 0.5 - frac) * L.rowH;
+      const first = Math.floor(listScroll.pos);
+      const last = Math.min(items.length - 1, first + L.n);
+      const listKey = open ? `o:${open.uri}` : `t:${ctx.props.tab}`;
+      for (const row of rows) if (row.idx < first || row.idx > last || !row.key.startsWith(listKey + ':')) { row.g.visible = false; row.idx = -1; row.key = ''; }
+      for (let i = first; i <= last; i++) {
+        const row = rows[i % rows.length], it = items[i];
+        row.g.position.y = L.listTop - (i - listScroll.pos + 0.5) * L.rowH;
+        const key = `${listKey}:${i}:${it.uri}`;
+        if (row.key !== key) row.hold = true; // entering: hidden until its texts are laid out
+        row.idx = i;
+        row.key = key;
         row.art.visible = !!it.image;
         row.icon.visible = !row.art.visible;
         if (row.art.visible) setMap(row.artMat, it.image);
         else setIcon(T, row.icon, it.kind === 'collection' ? 'heart' : it.kind === 'artist' ? 'users' : it.kind === 'album' ? 'disc-3' : it.kind === 'playlist' ? 'library' : 'music');
         const playing = !!t && (it.uri === t.uri || it.uri === st?.contextUri);
-        row.name.set(truncate(it.name, 38));
+        row.sync.set(row.name, truncate(it.name, 38));
         (row.name as unknown as { color: unknown }).color = playing ? SP.green : SP.text;
-        row.sub.set(truncate(it.sub, 46));
-        row.dur.set(it.duration ? fmtTime(it.duration) : '');
+        row.sync.set(row.sub, truncate(it.sub, 46));
+        row.sync.set(row.dur, it.duration ? fmtTime(it.duration) : '');
+        // A row taking a new item shows once its text is laid out (never the previous item's words).
+        if (row.sync.ready()) row.hold = false;
+        else dirty = true;
+        row.g.visible = !row.hold;
       }
       view!.update();
       progressDirty = true;
@@ -636,7 +673,13 @@ const definition: WidgetDefinition<Props> = {
         case 'next': request({ cmd: 'next' }); player?.flush(); break;
         case 'shuffle': request({ cmd: 'shuffle', on: !st?.shuffle }); break;
         case 'repeat': request({ cmd: 'repeat', mode: st?.repeatTrack ? 'off' : st?.repeatContext ? 'track' : 'context' }); break;
-        case 'like': if (t) request({ cmd: 'like', uri: t.uri, liked: true }); break;
+        case 'like':
+          if (t) {
+            const liked = !likedNow();
+            optimisticLiked = { uri: t.uri, v: liked, until: Date.now() + 3000 };
+            request({ cmd: 'like', uri: t.uri, liked });
+          }
+          break;
         case 'back': open = null; listScroll.scrollTo(0, false); break;
         case 'playctx': {
           const uri = open?.uri ?? (ctx.props.tab === 'liked' ? 'spotify:collection:tracks' : '');
@@ -652,7 +695,8 @@ const definition: WidgetDefinition<Props> = {
             if (tab === 'liked' && !liked) loadTracks('spotify:collection:tracks');
             if (tab === 'playlists' && !lib.length) loadLibrary();
           } else if (part.startsWith('row:')) {
-            const it = list().items[Math.floor(listScroll.pos) + Number(part.slice(4))];
+            const slot = rows[Number(part.slice(4))];
+            const it = slot && slot.idx >= 0 ? list().items[slot.idx] : undefined;
             if (!it) break;
             if (it.kind === 'track') {
               // play it within what it was listed in (playlist / album / liked), else its album

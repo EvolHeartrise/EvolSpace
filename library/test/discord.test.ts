@@ -34,7 +34,7 @@ it('picks a DM through the picker (unread badges), subscribes and leases the cha
   const h = await mount(discord, {});
   h.publish('discord.status', { state: 'ready', user: { id: 'b', name: 'evol' } });
   h.publish('discord.channels', channels);
-  h.frame();
+  h.frame(3);
   expect(h.hasText('Direct Messages')).toBe(true);
   expect(h.hasText('Beat Lab')).toBe(true);
   expect(h.hasText(/Signed in/)).toBe(false);
@@ -43,7 +43,7 @@ it('picks a DM through the picker (unread badges), subscribes and leases the cha
   expect(nearestHit(h.root, 'pick:0')).toBe('pick:0');
 
   h.press('pick:0', 'drag'); // Direct Messages
-  h.frame();
+  h.frame(3);
   expect(h.hasText('alice')).toBe(true);
   expect(h.hasText('bob, carol')).toBe(true);
   h.press('pick:0', 'drag'); // alice
@@ -57,7 +57,7 @@ it('picks a DM through the picker (unread badges), subscribes and leases the cha
   expect(h.hasText('Message @alice')).toBe(true);
 
   h.press('back');
-  h.frame();
+  h.frame(3);
   expect(h.rec.setProps.at(-1)).toEqual({ channelId: '' });
   expect(h.hasText('bob, carol')).toBe(true); // back to the DM list it came from
   expect(h.rec.errors).toEqual([]);
@@ -69,9 +69,9 @@ it('server channels: category headers, header rows are not tappable', async () =
   const h = await mount(discord, {});
   h.publish('discord.status', { state: 'ready' });
   h.publish('discord.channels', channels);
-  h.frame();
+  h.frame(3);
   h.press('pick:1', 'drag'); // Beat Lab
-  h.frame();
+  h.frame(3);
   expect(h.hasText('TEXT')).toBe(true);
   h.press('pick:0', 'drag'); // the header: nothing
   expect(h.rec.setProps).toEqual([]);
@@ -88,7 +88,7 @@ it('shows the newest messages at the bottom; scrolling keeps messages in their s
   expect(h.hasText('message 10')).toBe(false);
   const slotOf39 = h.root.getObjectsByProperty('text', 'message 39')[0];
   h.drag('body', [0, -0.03, 0], { steps: 3 }); // a little: message 39 stays in view
-  h.frame();
+  h.frame(3);
   expect(h.root.getObjectsByProperty('text', 'message 39')[0]).toBe(slotOf39); // same slot: nothing re-wrapped
   h.drag('body', [0, -0.2, 0]);
   h.frame(3);
@@ -99,7 +99,7 @@ it('shows the newest messages at the bottom; scrolling keeps messages in their s
 
 it('explains a missing source; message bodies and Discord timestamps', async () => {
   const h = await mount(discord, { channelId: '333333' });
-  h.frame();
+  h.frame(3);
   expect(h.hasText(/DISCORD_USER_TOKEN/)).toBe(true);
   h.dispose();
   const b = messageBody({ id: '1', author: { id: 'a', name: 'a' }, content: 'look @bob', ts: 0, attachments: [{ name: 'notes.txt' }, { name: 'cat.png', image: { src: '/media/x.png', w: 10, h: 10 } }], embeds: [{ title: 'T', description: 'D' }], edited: true }, 500, { text: 1, link: 2, mention: 3, faint: 4 });

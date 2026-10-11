@@ -16,7 +16,7 @@ import { truncate, formatAge } from '../../shared/format.ts';
 import { dragBinding } from '../../shared/handle.ts';
 import { ChannelProp } from '../../shared/binding.ts';
 import { STYLE } from '../../shared/style.ts';
-import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
+import { ScrollViewport, SmoothScroll, TextSync } from '../../shared/scroll.ts';
 
 interface Props extends Record<string, unknown> {
   title: string;
@@ -107,7 +107,8 @@ const definition: WidgetDefinition<Props> = {
     let ageText: Text | null = null;
     let tabsGroup: THREE.Group | null = null;
     let tabKeys: string[] = [];
-    const rowParts: Array<{ g: THREE.Group; stripe: THREE.Mesh; mat: THREE.MeshBasicMaterial; line1: Text; line2: Text }> = [];
+    /** Pooled rows; item i always uses slot i % slots (it keeps its texts while in view: no re-layout flicker). */
+    const rowParts: Array<{ g: THREE.Group; stripe: THREE.Mesh; mat: THREE.MeshBasicMaterial; line1: Text; line2: Text; idx: number; sync: TextSync; hold: boolean }> = [];
     let hoverPlate: THREE.Mesh | null = null;
     let selPlate: THREE.Mesh | null = null;
     let thumb: THREE.Mesh | null = null;
@@ -172,7 +173,7 @@ const definition: WidgetDefinition<Props> = {
         rg.add(stripe, line1, line2, hit);
         g.add(rg);
         view.add(rg);
-        rowParts.push({ g: rg, stripe, mat, line1, line2 });
+        rowParts.push({ g: rg, stripe, mat, line1, line2, idx: -1, sync: new TextSync(), hold: false });
       }
 
       const rowsH = L.n * L.rowH;
@@ -246,35 +247,44 @@ const definition: WidgetDefinition<Props> = {
       const chars2 = Math.max(8, Math.floor(avail / (L.s * 0.78 * 0.5)));
       const textInt = hexToInt(resolveColor(theme, 'text')), dimInt = hexToInt(resolveColor(theme, 'textDim'));
       let selRow = -1;
-      for (let r = 0; r <= L.n; r++) {
-        const p = rowParts[r], it = shown[first + r];
-        p.g.position.y = L.rowsTop - (r + 0.5 - frac) * L.rowH;
-        const inView = r < L.n || frac > 1e-4; // the spare row only shows while scrolled between rows
-        p.g.visible = inView && (!!it || (r === 0 && !shown.length));
-        if (!it) {
-          if (r === 0) {
-            p.line1.set(data.items.length ? 'Nothing with this status' : 'Waiting for data…');
-            p.line2.set('');
-            p.stripe.visible = false;
-          }
-          continue;
-        }
+      const slots = L.n + 1;
+      const last = first + (frac > 1e-4 ? L.n : L.n - 1); // the spare row only shows while scrolled between rows
+      for (const p of rowParts) if (p.idx < first || p.idx > last || !shown[p.idx]) { p.g.visible = false; if (p.idx >= 0 && !shown.length) p.idx = -1; }
+      if (!shown.length) {
+        const p = rowParts[0];
+        p.idx = -1;
+        p.g.position.y = L.rowsTop - 0.5 * L.rowH;
+        p.line1.set(data.items.length ? 'Nothing with this status' : 'Waiting for data…');
+        p.line2.set('');
+        setColorRanges(p.line1, null);
+        p.stripe.visible = false;
+        p.g.visible = true;
+      }
+      for (let i = first; i <= last && i < shown.length; i++) {
+        const p = rowParts[i % slots], it = shown[i];
+        p.g.position.y = L.rowsTop - (i - scroll.pos + 0.5) * L.rowH;
+        if (p.idx !== i) p.hold = true; // entering: hidden until its texts are laid out
+        p.idx = i;
         p.stripe.visible = true;
         const col = colorOf(it);
         p.mat.color.set(col);
         const id = it.id ? `${it.id}  ` : '';
-        p.line1.set(truncate(id + it.title, chars1));
+        p.sync.set(p.line1, truncate(id + it.title, chars1));
         setColorRanges(p.line1, id ? { 0: dimInt, [id.length]: textInt } : null);
         const status = it.status ? it.status.toUpperCase() : '';
         const extra = [it.meta, it.labels.length ? it.labels.join(', ') : ''].filter(Boolean).join(' · ');
         const meta = status ? (extra ? `${status} · ${extra}` : status) : extra;
-        p.line2.set(truncate(meta, chars2));
+        p.sync.set(p.line2, truncate(meta, chars2));
         setColorRanges(p.line2, status ? { 0: hexToInt(col), [status.length]: dimInt } : null);
-        if (selected && it === selected) selRow = r;
+        // A row taking a new item shows once its text is laid out (never the previous item's words).
+        if (p.sync.ready()) p.hold = false;
+        else dirty = true;
+        p.g.visible = !p.hold;
+        if (selected && it === selected) selRow = i % slots;
       }
       selPlate!.visible = selRow >= 0;
       if (selRow >= 0) selPlate!.position.set(0, rowParts[selRow].g.position.y, STYLE.zContent);
-      hoverPlate!.visible = hovered >= 0 && hovered <= L.n && !!shown[first + hovered] && hovered !== selRow;
+      hoverPlate!.visible = hovered >= 0 && hovered <= L.n && rowParts[hovered].g.visible && rowParts[hovered].idx >= 0 && hovered !== selRow;
       if (hoverPlate!.visible) hoverPlate!.position.set(0, rowParts[hovered].g.position.y, STYLE.zContent);
       const over = shown.length > L.n;
       track!.visible = thumb!.visible = over;
@@ -373,7 +383,7 @@ const definition: WidgetDefinition<Props> = {
             dirty = true;
           }
         } else {
-          const r = rowAt(dragPart), it = r >= 0 ? shown[Math.floor(scroll.pos) + r] : undefined;
+          const r = rowAt(dragPart), it = r >= 0 && rowParts[r] ? shown[rowParts[r].idx] : undefined;
           if (it) {
             selected = selected === it ? null : it;
             if (selected) ctx.emit('select', { ...selected });

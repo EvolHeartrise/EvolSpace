@@ -193,7 +193,7 @@ Port→channel values are published by the client running the widget (the headse
 | `instanced.ts` | `FittedInstances` (instanced mesh with tight bounds) |
 | `handle.ts` | `DragHandle`, `PressTracker`, `KnobVisual`, `dragBinding`, `along` |
 | `binding.ts` | `ChannelProp` (prop-driven subscription), `Throttle` |
-| `scroll.ts` | `SmoothScroll` (follow the hand 1:1, fling + friction, `scrollTo` easing; `unit` = one row in your scroll unit) and `ScrollViewport` (clip partial rows at the area's edges: clipping planes for meshes, clipRect for texts, hit boxes trimmed). Every scroll area uses these: pool one extra row and lay out with `floor(pos)` + fraction, never `Math.round` |
+| `scroll.ts` | `SmoothScroll` (follow the hand 1:1, fling + friction, `scrollTo` easing; `unit` = one row in your scroll unit) and `ScrollViewport` (clip partial rows at the area's edges: clipping planes for meshes, clipRect for texts, hit boxes trimmed). Every scroll area uses these: pool one extra row and lay out with `floor(pos)` + fraction, never `Math.round`. No flicker: item i always uses slot `i % slots` (a row keeps its texts while in view), and a slot taking a new item stays hidden until its `TextSync` is `ready()` (troika lays text out asynchronously; the old string shows meanwhile) |
 | `billboard.ts` | `Billboard` (face the rendering camera; yaw or full) |
 | `segments.ts` | `SegmentMath` (orient unit rods between points), `readVec3` |
 | `shape.ts` | implementation behind `shape`/`box` |
