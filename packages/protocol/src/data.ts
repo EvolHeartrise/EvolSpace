@@ -17,6 +17,15 @@ export interface TensorValue {
 /** A channel value is either JSON or a tensor. */
 export type ChannelValue = unknown | TensorValue;
 
+/**
+ * Stream channels (names ending in `.stream`, e.g. `spotify.audio.stream`) carry a sequence of chunks
+ * (audio) rather than state: the server delivers every value in order instead of coalescing to the
+ * latest under backpressure (bounded: a client too slow for the stream loses its oldest chunks).
+ */
+export function isStreamChannel(name: string): boolean {
+  return name.endsWith('.stream');
+}
+
 export interface ChannelInfo {
   name: string;
   kind: 'json' | 'tensor';

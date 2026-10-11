@@ -149,6 +149,11 @@ export interface WidgetContext<P extends Record<string, unknown> = Record<string
   error(message: string, detail?: unknown): void;
   /** True when rendering in the headless mirror (for screenshots); avoid expensive effects. */
   readonly isMirror: boolean;
+  /**
+   * The client running this instance: its server-assigned id (null until connected; stable for the
+   * connection) — e.g. to pick ONE client to play a widget's audio when the scene is open in several.
+   */
+  readonly client: { readonly id: string | null };
   /** Read-only view of the user (head + hands) in space coordinates. */
   readonly user: UserView;
 }

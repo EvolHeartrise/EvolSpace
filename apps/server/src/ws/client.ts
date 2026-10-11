@@ -6,7 +6,10 @@
 // the high-water mark we keep only the latest value per channel and flush those
 // when the buffer drains. A slow Quest on Wi-Fi therefore receives the newest
 // tensors at the rate it can absorb instead of an ever-growing backlog.
-import type { ClientRole, ServerMessage } from '@evolspace/protocol';
+// Stream channels (`*.stream`, e.g. audio) are the exception: every chunk matters,
+// so under backpressure they queue in order (bounded by STREAM_BACKLOG_BYTES; the
+// oldest chunks go first when a client can't keep up).
+import { isStreamChannel, type ClientRole, type ServerMessage } from '@evolspace/protocol';
 import { DataBus, matchesPattern, type Channel } from '../data/bus.ts';
 
 /** Subset of ws.WebSocket used here (lets tests inject a fake socket). */
@@ -18,6 +21,8 @@ export interface SocketLike {
 }
 
 const OPEN = 1;
+/** Per-client cap on queued stream chunks (~6 s of 44.1 kHz stereo PCM). */
+const STREAM_BACKLOG_BYTES = 1_000_000;
 
 export class ClientConnection {
   role: ClientRole = 'tool';
@@ -35,8 +40,11 @@ export class ClientConnection {
   private exact = new Set<string>();
   private patterns = new Set<string>();
   private pending = new Map<string, Channel>();
+  /** Stream-channel chunks held back by backpressure, in order. */
+  private streamQueue: Channel[] = [];
+  private streamQueued = 0;
   private flushTimer: NodeJS.Timeout | null = null;
-  readonly stats = { sent: 0, coalesced: 0, bytes: 0 };
+  readonly stats = { sent: 0, coalesced: 0, bytes: 0, streamDropped: 0 };
 
   constructor(
     readonly id: string,
@@ -82,6 +90,20 @@ export class ClientConnection {
   sendChannel(ch: Channel): void {
     if (!this.open) return;
     const name = ch.info.name;
+    if (isStreamChannel(name)) {
+      if (this.streamQueue.length > 0 || this.socket.bufferedAmount > this.highWaterMark) {
+        this.streamQueue.push(ch);
+        this.streamQueued += chunkBytes(ch);
+        while (this.streamQueued > STREAM_BACKLOG_BYTES && this.streamQueue.length > 1) {
+          this.streamQueued -= chunkBytes(this.streamQueue.shift()!);
+          this.stats.streamDropped++;
+        }
+        this.scheduleFlush();
+        return;
+      }
+      this.writeChannel(ch);
+      return;
+    }
     if (this.pending.size > 0 || this.socket.bufferedAmount > this.highWaterMark) {
       if (this.pending.has(name)) this.stats.coalesced++;
       this.pending.delete(name); // re-insert at the end: flush order follows recency
@@ -94,11 +116,15 @@ export class ClientConnection {
 
   /** Values currently held back by backpressure (for tests/diagnostics). */
   get pendingChannels(): number { return this.pending.size; }
+  /** Stream chunks currently queued (for tests/diagnostics). */
+  get pendingStreamChunks(): number { return this.streamQueue.length; }
 
   dispose(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = null;
     this.pending.clear();
+    this.streamQueue = [];
+    this.streamQueued = 0;
   }
 
   private writeChannel(ch: Channel): void {
@@ -125,12 +151,22 @@ export class ClientConnection {
   }
 
   private flush(): void {
-    if (!this.open) { this.pending.clear(); return; }
-    while (this.pending.size > 0 && this.socket.bufferedAmount <= this.highWaterMark) {
+    if (!this.open) { this.pending.clear(); this.streamQueue = []; this.streamQueued = 0; return; }
+    // Stream chunks first (in order: audio can't wait), then the latest state values.
+    while (this.streamQueue.length > 0 && this.socket.bufferedAmount <= this.highWaterMark) {
+      const ch = this.streamQueue.shift()!;
+      this.streamQueued -= chunkBytes(ch);
+      this.writeChannel(ch);
+    }
+    while (this.streamQueue.length === 0 && this.pending.size > 0 && this.socket.bufferedAmount <= this.highWaterMark) {
       const [name, ch] = this.pending.entries().next().value as [string, Channel];
       this.pending.delete(name);
       this.writeChannel(ch);
     }
-    if (this.pending.size > 0) this.scheduleFlush();
+    if (this.pending.size > 0 || this.streamQueue.length > 0) this.scheduleFlush();
   }
+}
+
+function chunkBytes(ch: Channel): number {
+  return ch.tensor ? ch.tensor.data.byteLength : 256;
 }

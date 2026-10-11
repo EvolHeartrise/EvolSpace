@@ -1,0 +1,8 @@
+{
+  "description": "EvolSpace's own Spotify client (Premium; unofficial, like every librespot client): go-librespot (installed into data/spotify, checksum-verified) runs as the Spotify Connect device \"EvolSpace\" and decodes the music; its PCM is paced in real time onto spotify.audio.stream, which the spotify widget plays in the headset. State on spotify.state (sign-in via spotify.com/pair code, now playing, volume, …), search results on spotify.search; controls via spotify.request = {cmd:'play', uri, skipTo?} | resume | pause | playpause | next | prev | {cmd:'seek', position ms} | {cmd:'volume', volume 0-100} | {cmd:'shuffle', on} | {cmd:'repeat', mode} | {cmd:'queue', uri} | {cmd:'like', uri, liked} | {cmd:'search', query} | {cmd:'library'|'tracks', …, reply}.",
+  "command": "node",
+  "args": ["spotify.mjs", "--prefix", "spotify", "--port", "3679"],
+  "cwd": ".",
+  "autostart": true,
+  "restart": true
+}

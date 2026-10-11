@@ -13,6 +13,33 @@ class FakeSocket implements SocketLike {
 }
 
 describe('ClientConnection backpressure', () => {
+  it('stream channels (*.stream) queue every chunk in order under backpressure, bounded', async () => {
+    const sock = new FakeSocket();
+    const c = new ClientConnection('c-1', sock, 1000);
+    const bus = new DataBus();
+    c.subscribe(['spotify.audio.stream', 'spotify.state']);
+    bus.onPublish((ch) => c.sendChannel(ch));
+    const chunk = (i: number) => makeTensor('i16', [4], new Int16Array([i, i, i, i]));
+    sock.bufferedAmount = 5000; // congested
+    for (let i = 0; i < 10; i++) bus.publish('spotify.audio.stream', chunk(i));
+    bus.publish('spotify.state', { a: 1 });
+    bus.publish('spotify.state', { a: 2 });
+    expect(c.pendingStreamChunks).toBe(10); // nothing coalesced
+    sock.bufferedAmount = 0;
+    await until(() => c.pendingStreamChunks === 0 && c.pendingChannels === 0);
+    const firsts = sock.sent.filter((d) => typeof d !== 'string').map((d) => decodeTensorFrame(d as Uint8Array).tensor.data[0]);
+    expect(firsts).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(sock.sent.filter((d) => typeof d === 'string')).toHaveLength(1); // state still coalesced to the latest
+
+    // A client that can't keep up loses the oldest chunks, not the newest.
+    sock.bufferedAmount = 5000;
+    const big = (i: number) => makeTensor('u8', [300_000], new Uint8Array(300_000).fill(i));
+    for (let i = 0; i < 6; i++) bus.publish('spotify.audio.stream', big(i));
+    expect(c.pendingStreamChunks).toBe(3);
+    expect(c.stats.streamDropped).toBe(3);
+    c.dispose();
+  });
+
   it('coalesces channel values latest-per-channel while the socket is congested', async () => {
     const sock = new FakeSocket();
     const c = new ClientConnection('c-1', sock, 1000);

@@ -102,6 +102,7 @@ export function makeCtx(props: Record<string, unknown> = {}, defaults: Record<st
     log: () => {},
     error: (m) => { errors.push(m); },
     isMirror: false,
+    client: { id: 'c-test' },
     user: { head: { position: [0, 1.6, 0], rotation: [0, 0, 0, 1] }, hands: {} },
   };
   return {
