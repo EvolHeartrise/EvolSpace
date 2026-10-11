@@ -33,6 +33,7 @@ import { dragBinding } from '../../shared/handle.ts';
 import { isTensor } from '../../shared/tensor.ts';
 import { FittedInstances } from '../../shared/instanced.ts';
 import { SmoothScroll } from '../../shared/scroll.ts';
+import { LineWindow, type FillLines } from '../../shared/line-window.ts';
 import {
   GEO, age, arcCapacity, arcSlots, baseName, clamp, clamp01, coneRadius, easeInOut, easeOut, folderTitle, iconFor,
   joinPath, levels, MAX_TAGS, navKind, normPath, pageCount, ringAlpha, ringPlan, ringZ, rowSpecs, slotPosition,
@@ -535,10 +536,12 @@ const definition: WidgetDefinition<Props> = {
     let pv: {
       path: string; dir: string; base: string; data: Preview | null; e: number; closing: boolean;
       from: { pos: THREE.Vector3; quat: THREE.Quaternion; scale: number };
-      g: THREE.Group; body: Text | null; nums: Text | null; scroll: SmoothScroll; tex: THREE.Texture | null;
+      g: THREE.Group; scroll: SmoothScroll; tex: THREE.Texture | null;
       lines: string[]; spans: Span[][]; lang: string;
-      /** First line currently in the text meshes (-1 = none yet), the text area's top, and the texts' clip rects. */
-      shownFrom: number; bodyTop: number; clipBody: [number, number, number, number]; clipNums: [number, number, number, number];
+      /** Text preview: two buffers of [code, line numbers] (shared/line-window.ts: no re-layout flicker while scrolling). */
+      win: LineWindow | null; fill: FillLines | null; busy: boolean;
+      /** The text area's top, and one clip rect per text (text-local). */
+      bodyTop: number; clips: Array<[number, number, number, number]>;
     } | null = null;
     const LINE_H = CODE * CODE_LH;
     const syntaxInts = Object.fromEntries(Object.entries(SYNTAX_COLORS).map(([k, v]) => [k, hexToInt(v)])) as Record<TokenKind, number>;
@@ -553,8 +556,8 @@ const definition: WidgetDefinition<Props> = {
       group.add(g);
       const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
       pv = {
-        path, dir: cut > 0 ? normPath(path.slice(0, cut)) : '', base: baseName(path), data: null, e: 0, closing: false, from, g, body: null, nums: null,
-        scroll: new SmoothScroll(), tex: null, lines: [], spans: [], lang: '', shownFrom: -1, bodyTop: 0, clipBody: [-10, -1, 10, 0], clipNums: [-10, -1, 10, 0],
+        path, dir: cut > 0 ? normPath(path.slice(0, cut)) : '', base: baseName(path), data: null, e: 0, closing: false, from, g,
+        scroll: new SmoothScroll(), tex: null, lines: [], spans: [], lang: '', win: null, fill: null, busy: false, bodyTop: 0, clips: [],
       };
       buildPreview();
       request('preview', path);
@@ -581,7 +584,9 @@ const definition: WidgetDefinition<Props> = {
       if (!pv) return;
       const g = pv.g;
       for (const c of [...g.children]) disposeTree(c);
-      pv.body = pv.nums = null;
+      pv.win = null;
+      pv.fill = null;
+      pv.busy = false;
       pv.tex?.dispose();
       pv.tex = null;
       const p = pv.data;
@@ -624,18 +629,32 @@ const definition: WidgetDefinition<Props> = {
         const lang = languageFor(name);
         pv.spans = highlight(pv.lines.join('\n'), lang);
         pv.lang = lang?.id ?? '';
-        pv.nums = makeText(ctx, '', { size: CODE, anchorX: 'right', anchorY: 'top', color: theme.textDim, font: 'mono', lineHeight: CODE_LH });
-        pv.nums.position.set(x0 + 0.026, bodyTop, 0.003);
-        pv.body = makeText(ctx, '', { size: CODE, anchorX: 'left', anchorY: 'top', color: theme.text, font: 'mono', whiteSpace: 'nowrap', lineHeight: CODE_LH });
-        pv.body.position.set(x0 + 0.034, bodyTop, 0.003);
+        const pair = (): Text[] => {
+          const body = makeText(ctx, '', { size: CODE, anchorX: 'left', anchorY: 'top', color: theme.text, font: 'mono', whiteSpace: 'nowrap', lineHeight: CODE_LH });
+          body.position.set(x0 + 0.034, bodyTop, 0.003);
+          const nums = makeText(ctx, '', { size: CODE, anchorX: 'right', anchorY: 'top', color: theme.textDim, font: 'mono', lineHeight: CODE_LH });
+          nums.position.set(x0 + 0.026, bodyTop, 0.003);
+          g.add(body, nums);
+          return [body, nums];
+        };
+        pv.win = new LineWindow(pair(), pair());
+        pv.clips = [[-10, -1, 10, 0], [-10, -1, 10, 0], [-10, -1, 10, 0], [-10, -1, 10, 0]];
+        const owner = pv;
+        pv.fill = (texts, from, count, sync) => {
+          const shownLines = owner.lines.slice(from, from + count);
+          const shown = shownLines.map((l) => (l.length > CODE_COLS ? l.slice(0, CODE_COLS - 1) + '…' : l));
+          sync.set(texts[0], shown.join('\n'));
+          const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
+          setColorRanges(texts[0], owner.lang ? colorRanges(owner.spans.slice(from, from + count), shown.map((l) => l.length), syntaxInts, hexToInt(theme.text), clips) : null);
+          sync.set(texts[1], shownLines.map((_, i) => String(from + i + 1)).join('\n'));
+        };
         pv.bodyTop = bodyTop;
-        pv.shownFrom = -1;
         const hit = new T.Mesh(sharedGeometry(T, 'box'), hitMaterial(T));
         hit.scale.set(PV_W - PV_PAD, bodyH, 0.01);
         hit.position.set(0, bodyTop - bodyH / 2, 0.004);
         hit.name = 'pv:text';
         ctx.interactive(hit);
-        g.add(pv.nums, pv.body, hit);
+        g.add(hit);
         renderPreviewText();
       } else if (p?.type === 'image' && p.src && typeof document !== 'undefined') {
         const mat = new T.MeshBasicMaterial({ color: '#ffffff', toneMapped: false });
@@ -665,32 +684,29 @@ const definition: WidgetDefinition<Props> = {
     }
 
     /**
-     * Smooth scrolling: the texts hold PV_LINES + 1 lines from floor(scroll), shifted up by the
-     * fractional part and clipped (troika clipRect) to the text area. Text content is only rebuilt
-     * when the first line changes; in between just the position + clip move.
+     * Smooth scrolling without flicker: each buffer of the LineWindow holds an over-scan window of lines and
+     * scrolls by moving (its top sits `offset` lines above the area's top) and is clipped (troika clipRect) to
+     * the text area; the window is refilled in the hidden buffer, swapped in once laid out.
      */
     function renderPreviewText(): void {
-      if (!pv || !pv.body || !pv.nums) return;
+      if (!pv || !pv.win || !pv.fill) return;
       const lines = pv.lines;
       pv.scroll.setMax(Math.max(0, lines.length - PV_LINES));
       const pos = pv.scroll.pos;
-      const from = Math.floor(pos);
-      if (from !== pv.shownFrom) {
-        pv.shownFrom = from;
-        const shownLines = lines.slice(from, from + PV_LINES + 1);
-        const shown = shownLines.map((l) => (l.length > CODE_COLS ? l.slice(0, CODE_COLS - 1) + '…' : l));
-        pv.body.set(shown.join('\n'));
-        const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
-        setColorRanges(pv.body, pv.lang ? colorRanges(pv.spans.slice(from, from + PV_LINES + 1), shown.map((l) => l.length), syntaxInts, hexToInt(theme.text), clips) : null);
-        pv.nums.set(shownLines.map((_, i) => String(from + i + 1)).join('\n'));
+      pv.busy = pv.win.update(pos, PV_LINES, lines.length, pv.fill);
+      for (let b = 0; b < 2; b++) {
+        const buf = pv.win.bufs[b];
+        if (buf.from < 0) continue;
+        const lift = pv.win.offset(buf, pos) * LINE_H;
+        for (let k = 0; k < buf.texts.length; k++) {
+          const t = buf.texts[k], clip = pv.clips[b * 2 + k];
+          t.position.y = pv.bodyTop + lift;
+          clip[1] = -lift - PV_LINES * LINE_H;
+          clip[3] = -lift;
+          const tc = t as unknown as { clipRect: number[] | null };
+          if (tc.clipRect !== clip) tc.clipRect = clip;
+        }
       }
-      // Text tops sit frac lines above the area's top; clip (text-local, y down from 0) to the area.
-      const lift = (pos - from) * LINE_H;
-      pv.body.position.y = pv.nums.position.y = pv.bodyTop + lift;
-      pv.clipBody[1] = pv.clipNums[1] = -lift - PV_LINES * LINE_H;
-      pv.clipBody[3] = pv.clipNums[3] = -lift;
-      (pv.body as unknown as { clipRect: number[] | null }).clipRect = pv.clipBody;
-      (pv.nums as unknown as { clipRect: number[] | null }).clipRect = pv.clipNums;
     }
 
     function onPreview(v: ChannelValue): void {
@@ -1088,7 +1104,7 @@ const definition: WidgetDefinition<Props> = {
       },
       update(dt) {
         const d = Math.min(0.1, Number.isFinite(dt) ? dt : 0.016);
-        if (pv?.scroll.active && pv.scroll.step(d)) renderPreviewText(); // preview glide
+        if (pv && ((pv.scroll.active && pv.scroll.step(d)) || pv.busy)) renderPreviewText(); // preview glide / window swap
         const active = step(d);
         if (!active && !dirty) return;
         dirty = false;

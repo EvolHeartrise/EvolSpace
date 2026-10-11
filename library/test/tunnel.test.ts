@@ -202,9 +202,10 @@ it('extrudes a file preview from its card, scrolls it and retracts it', async ()
   h.frame(40);
   expect(h.hasText('const v0 = 0;')).toBe(true);
   expect(h.hasText(/^1\n2\n3/)).toBe(true);
+  const before = previewFirstLine(h);
   h.drag('pv:text', [0, 0.15, 0]);
-  h.frame();
-  expect(h.hasText('const v0 = 0;')).toBe(false);
+  h.frame(3);
+  expect(previewFirstLine(h) - before).toBeGreaterThan(8); // ≈ 0.15 m / line height
   h.press('pv:ask', 'drag');
   expect(h.rec.asks.at(-1)).toContain('~/proj/main.ts');
   h.press(`tile:${cap}`, 'drag'); // same card again → retract
@@ -270,6 +271,19 @@ function flick(h: Pick<Harness, 'interact'>, part: string, from: [number, number
   spy.mockRestore();
 }
 
+/** The visible preview text (the shown buffer) and its first visible line: its first line number + the lines it is lifted by. */
+function previewBody(h: Awaited<ReturnType<typeof opened>>) {
+  type T = THREE.Object3D & { text: string; clipRect?: number[] };
+  let found: T | undefined;
+  h.root.traverse((o) => { const t = o as THREE.Object3D & { text?: string }; if (!found && typeof t.text === 'string' && t.text.startsWith('const v') && h.live(t)) found = t as T; });
+  return found!;
+}
+function previewFirstLine(h: Awaited<ReturnType<typeof opened>>): number {
+  const b = previewBody(h);
+  const n0 = Number(/^const v(\d+)/.exec(b.text)![1]);
+  return n0 - (b.clipRect?.[3] ?? 0) / (0.0112 * 1.3);
+}
+
 it('preview text scrolls smoothly: fractional line offset clipped to the text area, then glides after a flick', async () => {
   const h = await opened();
   h.publish('files.tunnel.test-entity.list', listing('~/proj', [['main.ts', 'file']]));
@@ -278,25 +292,26 @@ it('preview text scrolls smoothly: fractional line offset clipped to the text ar
   const text = Array.from({ length: 200 }, (_, i) => `const v${i} = ${i};`).join('\n');
   h.publish('files.tunnel.test-entity.preview', { kind: 'preview', path: `${HOME}/proj/main.ts`, name: 'main.ts', size: 900, mtime: Date.now(), type: 'text', text, lines: 200 });
   h.frame(40);
-  const body = () => {
-    let found: THREE.Object3D & { text: string; clipRect?: number[] } | undefined;
-    h.root.traverse((o) => { const t = o as THREE.Object3D & { text?: string }; if (typeof t.text === 'string' && t.text.startsWith('const v')) found = t as typeof found; });
-    return found!;
-  };
+  const body = () => previewBody(h);
   const top0 = body().position.y;
   const LH = 0.0112 * 1.3;
   // a slow drag: content follows the hand exactly (from the press point), no snapping to whole lines
   const dy = 3.4 * LH;
+  const textBefore = body();
+  const stringBefore = textBefore.text;
   h.drag('pv:text', [0, dy, 0], { steps: 2, end: false });
   h.frame();
-  expect(body().text.startsWith('const v3 = 3;\n')).toBe(true);
-  expect(body().position.y - top0).toBeCloseTo(0.4 * LH, 4); // lifted by the fractional line
+  // the over-scan window scrolls by moving: same text object, same string (no re-layout), lifted 3.4 lines
+  expect(body()).toBe(textBefore);
+  expect(body().text).toBe(stringBefore);
+  expect(body().position.y - top0).toBeCloseTo(3.4 * LH, 4);
   expect(body().clipRect![3]).toBeCloseTo(-(body().position.y - top0));
+  expect(previewFirstLine(h)).toBeCloseTo(3.4, 3);
   h.interact({ handler: 'drag', phase: 'cancel', objectName: 'pv:text', localPoint: [0, 0, 0] });
   // a flick keeps scrolling after the release, then comes to rest
   flick(h, 'pv:text', [0, -0.05, 0.004], 0.06);
   h.frame();
-  const first = () => Number(/^const v(\d+)/.exec(body().text)![1]);
+  const first = () => previewFirstLine(h);
   const atRelease = first();
   h.frame(30);
   const later = first();
@@ -304,6 +319,11 @@ it('preview text scrolls smoothly: fractional line offset clipped to the text ar
   h.frame(200);
   const rest = first();
   h.frame(30);
-  expect(first()).toBe(rest);
+  expect(first()).toBeCloseTo(rest, 6);
+  // far past the first window: the hidden buffer was refilled and swapped in once laid out
+  h.drag('pv:text', [0, 60 * LH, 0], { steps: 6 });
+  h.frame(4);
+  expect(body().text.startsWith('const v0 ')).toBe(false);
+  expect(first()).toBeGreaterThan(rest + 40);
   h.dispose();
 });

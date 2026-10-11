@@ -30,6 +30,7 @@ import { isTensor } from '../../shared/tensor.ts';
 import { STYLE } from '../../shared/style.ts';
 import { VideoSurface, clockLabel } from '../../shared/video-surface.ts';
 import { ScrollViewport, SmoothScroll } from '../../shared/scroll.ts';
+import { LineWindow, type FillLines } from '../../shared/line-window.ts';
 
 interface Props extends Record<string, unknown> {
   path: string;
@@ -194,8 +195,16 @@ interface ColView {
   /** n + 1 pooled rows (a partly visible one at each edge while scrolling). */
   icons: THREE.Mesh[];
   hits: THREE.Mesh[];
-  names: Text;
-  metas: Text;
+  /**
+   * Names + metas of the entries: two buffers of [names, metas] texts holding an over-scan window of rows
+   * (shared/line-window.ts) — scrolling moves them; refills happen in the hidden buffer, swapped in once
+   * laid out (no re-layout flicker). `busy`: a swap is pending; `textKey`: what the window was filled from.
+   */
+  win: LineWindow;
+  fill: FillLines;
+  busy: boolean;
+  textKey: string;
+  textList: Entry[] | null;
   sel: THREE.Mesh;
   selMat: THREE.MeshBasicMaterial;
   track: THREE.Mesh;
@@ -252,7 +261,9 @@ const definition: WidgetDefinition<Props> = {
     let pvWanted = ''; // requested preview path ('' = none)
     let pvNonce = 0;
     const pvSc = new SmoothScroll(); // preview text scroll, in lines
-    let pvFrom = -1; // first line of the rendered preview text (-1 = re-render)
+    /** Preview text: two buffers of [code, line numbers] (shared/line-window.ts: scrolling moves them; refills swap in once laid out). */
+    let pvWin: LineWindow | null = null;
+    let pvBusy = false;
     let dirty = true;
     let lastFolder = '';
 
@@ -489,7 +500,7 @@ const definition: WidgetDefinition<Props> = {
 
     // preview column
     let pv: THREE.Group;
-    let pvIcon: THREE.Mesh, pvTitle: Text, pvMeta: Text, pvBody: Text, pvNums: Text, pvMsg: Text, pvImg: THREE.Mesh, pvImgMat: THREE.MeshBasicMaterial;
+    let pvIcon: THREE.Mesh, pvTitle: Text, pvMeta: Text, pvMsg: Text, pvImg: THREE.Mesh, pvImgMat: THREE.MeshBasicMaterial;
     let pvHit: THREE.Mesh, pvTrack: THREE.Mesh, pvThumb: THREE.Mesh;
     let pvVp: ScrollViewport;
     const pvTextTop = () => H() / 2 - PAD - HEAD - 0.004;
@@ -640,20 +651,29 @@ const definition: WidgetDefinition<Props> = {
         icons.push(icon);
         hits.push(hit);
       }
-      // all names / all metas of a column are one text each (line height = row pitch)
-      const names = makeText(ctx, '', { size: NAME, color: theme.text, anchorX: 'left', anchorY: 'top', whiteSpace: 'nowrap', lineHeight: ROW / NAME });
-      names.position.set(x0 + 0.028, listTop, STYLE.zText);
-      const metas = makeText(ctx, '', { size: META, color: theme.textDim, anchorX: 'right', anchorY: 'top', whiteSpace: 'nowrap', lineHeight: ROW / META, textAlign: 'right' });
-      metas.position.set(x1 - 0.006, listTop, STYLE.zText);
+      // all names / all metas of a column window are one text each (line height = row pitch), double-buffered
+      const pair = (): Text[] => {
+        const names = makeText(ctx, '', { size: NAME, color: theme.text, anchorX: 'left', anchorY: 'top', whiteSpace: 'nowrap', lineHeight: ROW / NAME });
+        names.position.set(x0 + 0.028, listTop, STYLE.zText);
+        const metas = makeText(ctx, '', { size: META, color: theme.textDim, anchorX: 'right', anchorY: 'top', whiteSpace: 'nowrap', lineHeight: ROW / META, textAlign: 'right' });
+        metas.position.set(x1 - 0.006, listTop, STYLE.zText);
+        return [names, metas];
+      };
+      const bufA = pair(), bufB = pair();
       const rh = nRows() * ROW;
       const track = plane(theme.border, 0.003, rh);
       track.position.set(COL_W / 2 - PAD * 0.4, listTop - rh / 2, STYLE.zContent);
       const thumb = plane(theme.textDim, 0.003, 0.02);
       thumb.position.set(track.position.x, 0, STYLE.zOverlay);
-      g.add(names, metas, track, thumb);
+      g.add(...bufA, ...bufB, track, thumb);
       const vp = new ScrollViewport(T, g, listTop - nRows() * ROW, listTop);
-      for (const o of [...icons, names, metas, sel]) vp.add(o);
-      return { g, col: null, headIcon, title, sub, underline, icons, hits, names, metas, sel, selMat, track, thumb, vp, first: -1, selRow: -1 };
+      for (const o of [...icons, ...bufA, ...bufB, sel]) vp.add(o);
+      const view: ColView = {
+        g, col: null, headIcon, title, sub, underline, icons, hits, win: new LineWindow(bufA, bufB), fill: () => {}, busy: false, textKey: '', textList: null,
+        sel, selMat, track, thumb, vp, first: -1, selRow: -1,
+      };
+      view.fill = (texts, from, count, sync) => fillColumn(view, texts, from, count, sync);
+      return view;
     }
 
     function buildPreview(h: number): void {
@@ -685,10 +705,14 @@ const definition: WidgetDefinition<Props> = {
       divider.position.set(0, top - HEAD + 0.006, STYLE.zContent * 0.5);
       g.add(divider);
       const bodyTop = top - HEAD, bodyH = h - 2 * PAD - HEAD;
-      pvNums = makeText(ctx, '', { size: CODE, color: theme.textDim, anchorX: 'right', anchorY: 'top', font: 'mono', lineHeight: CODE_LH, textAlign: 'right' });
-      pvNums.position.set(x0 + 0.03, bodyTop - 0.004, STYLE.zText);
-      pvBody = makeText(ctx, '', { size: CODE, color: theme.text, anchorX: 'left', anchorY: 'top', font: 'mono', whiteSpace: 'nowrap', lineHeight: CODE_LH });
-      pvBody.position.set(x0 + 0.038, bodyTop - 0.004, STYLE.zText);
+      const pair = (): Text[] => {
+        const body = makeText(ctx, '', { size: CODE, color: theme.text, anchorX: 'left', anchorY: 'top', font: 'mono', whiteSpace: 'nowrap', lineHeight: CODE_LH });
+        body.position.set(x0 + 0.038, bodyTop - 0.004, STYLE.zText);
+        const nums = makeText(ctx, '', { size: CODE, color: theme.textDim, anchorX: 'right', anchorY: 'top', font: 'mono', lineHeight: CODE_LH, textAlign: 'right' });
+        nums.position.set(x0 + 0.03, bodyTop - 0.004, STYLE.zText);
+        return [body, nums];
+      };
+      const bufA = pair(), bufB = pair();
       pvMsg = makeText(ctx, '', { size: 0.013, color: theme.textDim, anchorX: 'center', anchorY: 'middle', maxWidth: PREV_W - 0.08, textAlign: 'center' });
       pvMsg.position.set(0, bodyTop - bodyH / 2, STYLE.zText);
       pvImgMat = new T.MeshBasicMaterial({ color: '#ffffff', toneMapped: false });
@@ -702,11 +726,10 @@ const definition: WidgetDefinition<Props> = {
       pvTrack.position.set(PREV_W / 2 - PAD * 0.4, bodyTop - bodyH / 2, STYLE.zContent);
       pvThumb = plane(theme.textDim, 0.003, 0.02);
       pvThumb.position.set(pvTrack.position.x, 0, STYLE.zOverlay);
-      g.add(pvNums, pvBody, pvMsg, pvImg, pvHit, pvTrack, pvThumb);
+      g.add(...bufA, ...bufB, pvMsg, pvImg, pvHit, pvTrack, pvThumb);
       pvVp = new ScrollViewport(T, g, bodyTop - bodyH, bodyTop - 0.004);
-      pvVp.add(pvBody);
-      pvVp.add(pvNums);
-      pvFrom = -1;
+      for (const t of [...bufA, ...bufB]) pvVp.add(t);
+      pvWin = new LineWindow(bufA, bufB);
 
       // video controls: play/pause · seek bar · time · mute
       pvV = new T.Group();
@@ -842,11 +865,24 @@ const definition: WidgetDefinition<Props> = {
       const list = c.entries ?? [];
       const msg = !c.entries ? 'Loading…' : c.error ? c.error : list.length ? '' : 'Empty folder';
       c.sc.setMax(msg ? 0 : Math.max(0, list.length - n));
+      // the names / metas window: refilled only when what it shows changed (the ages roll over each minute)
+      const key = `${msg}|${c.selected ?? ''}|${Math.floor(Date.now() / 60_000)}`;
+      if (key !== v.textKey || v.textList !== list) { v.textKey = key; v.textList = list; v.win.invalidate(); }
+      renderRows(v);
+      const over = list.length > n && !msg;
+      v.track.visible = v.thumb.visible = over;
+      positionRows(v);
+    }
+
+    /** Icons + selection of the pooled rows for the entry now first (meshes only: no text, instant). */
+    function renderRows(v: ColView): void {
+      const c = v.col;
+      if (!c) return;
+      const n = nRows();
+      const list = c.entries ?? [];
+      const msg = !c.entries || !!c.error || !list.length;
       const first = firstOf(c.sc.pos);
       v.first = first;
-      const nameChars = Math.floor((COL_W - 2 * PAD - 0.03 - 0.085) / (NAME * CHAR));
-      let names = '', metas = '';
-      const now = Date.now();
       let selRow = -1;
       for (let r = 0; r <= n; r++) {
         const e = msg ? undefined : list[first + r];
@@ -855,19 +891,31 @@ const definition: WidgetDefinition<Props> = {
         const [icon, color] = iconFor(e);
         setIcon(T, v.icons[r], icon);
         (v.icons[r].material as THREE.MeshBasicMaterial).color.set(color);
-        names += (r ? '\n' : '') + truncate(e.name, nameChars);
-        metas += (r ? '\n' : '') + metaLabel(e, now);
         if (c.selected === e.name) selRow = r;
       }
-      if (msg) names = truncate(msg, nameChars + 8);
-      v.names.set(names);
-      (v.names as unknown as { color: string }).color = msg ? theme.textDim : theme.text;
-      v.metas.set(metas);
       v.selRow = selRow;
       if (selRow >= 0) v.selMat.color.set(list[first + selRow]?.type === 'dir' ? pathColor : fileColor);
-      const over = list.length > n && !msg;
-      v.track.visible = v.thumb.visible = over;
-      positionRows(v);
+    }
+
+    /** Fill a names/metas buffer with entries [from, from + count) (or the column's message). */
+    function fillColumn(v: ColView, texts: Text[], from: number, count: number, sync: { set(t: { set(s: string): void }, s: string): boolean }): void {
+      const c = v.col;
+      const list = c?.entries ?? [];
+      const msg = !c ? '' : !c.entries ? 'Loading…' : c.error ? c.error : list.length ? '' : 'Empty folder';
+      const nameChars = Math.floor((COL_W - 2 * PAD - 0.03 - 0.085) / (NAME * CHAR));
+      const [names, metas] = texts;
+      (names as unknown as { color: string }).color = msg ? theme.textDim : theme.text;
+      if (msg) { sync.set(names, truncate(msg, nameChars + 8)); sync.set(metas, ''); return; }
+      const now = Date.now();
+      let ns = '', ms = '';
+      for (let i = from; i < from + count; i++) {
+        const e = list[i];
+        if (!e) break;
+        ns += (i > from ? '\n' : '') + truncate(e.name, nameChars);
+        ms += (i > from ? '\n' : '') + metaLabel(e, now);
+      }
+      sync.set(names, ns);
+      sync.set(metas, ms);
     }
 
     /** Place the pooled rows at the fractional scroll offset (no text changes; cheap per frame). */
@@ -891,8 +939,15 @@ const definition: WidgetDefinition<Props> = {
         hit.position.y = (lo + hi) / 2;
         hit.scale.y = Math.max(1e-4, hi - lo);
       }
-      v.names.position.y = y0;
-      v.metas.position.y = y0;
+      // the names / metas window (over-scan, double-buffered): scrolls by moving
+      const msg = !c.entries || !!c.error || !list.length;
+      const pos = msg ? 0 : c.sc.pos;
+      v.busy = v.win.update(pos, n, msg ? 1 : list.length, v.fill);
+      for (const b of v.win.bufs) {
+        if (b.from < 0) continue;
+        const y = listTop + v.win.offset(b, pos) * ROW;
+        for (const t of b.texts) t.position.y = y;
+      }
       v.sel.visible = v.selRow >= 0;
       if (v.selRow >= 0) v.sel.position.set(0, y0 - (v.selRow + 0.5) * ROW, STYLE.zContent);
       if (v.track.visible && list.length > n) {
@@ -907,8 +962,8 @@ const definition: WidgetDefinition<Props> = {
     /** A column's scroll position changed: re-fill the rows if another entry is now first, else just move them. */
     function scrollView(v: ColView): void {
       if (!v.col) return;
-      if (firstOf(v.col.sc.pos) !== v.first) renderView(v);
-      else positionRows(v);
+      if (firstOf(v.col.sc.pos) !== v.first) renderRows(v); // icons only: the text window just moves
+      positionRows(v);
     }
 
     function renderRail(): void {
@@ -932,6 +987,7 @@ const definition: WidgetDefinition<Props> = {
       const key = pvWanted ? `${pvWanted}|${preview?.type ?? ''}|${preview?.src ?? ''}|${preview?.text?.length ?? 0}|${preview?.error ?? ''}` : '';
       if (key !== previewKey) {
         previewKey = key;
+        pvWin?.invalidate(); // another file: refill the text window (the old one shows until the new one is laid out)
         imageTex?.dispose();
         imageTex = null;
         pvImgMat.map = null;
@@ -964,39 +1020,47 @@ const definition: WidgetDefinition<Props> = {
         if (p?.type === 'image' && p.src && typeof document !== 'undefined') loadImage(p.src);
         if (p?.type === 'video' && p.src && vs.available) { vs.load(p.src); vDirty = true; }
       }
-      pvFrom = -1;
       renderPreviewText();
     }
 
-    /** The visible window of the text preview (+1 line for the partial one while scrolling). */
+    /** Fill a preview buffer [code, numbers] with lines [from, from + count) (syntax colors, long lines cut). */
+    function fillPreview(texts: Text[], from: number, count: number, sync: { set(t: { set(s: string): void }, s: string): boolean }): void {
+      const [body, nums] = texts;
+      const shownLines = hlLines.slice(from, from + count);
+      const maxCh = Math.floor((PREV_W - 2 * PAD - 0.045) / (CODE * 0.6));
+      const shown = shownLines.map((l) => (l.length > maxCh ? l.slice(0, maxCh - 1) + '…' : l));
+      sync.set(body, shown.join('\n'));
+      const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
+      setColorRanges(body, hlLang ? colorRanges(hlSpans.slice(from, from + shownLines.length), shown.map((l) => l.length), syntaxInts, textInt, clips) : null);
+      sync.set(nums, shownLines.map((_, i) => String(from + i + 1)).join('\n'));
+    }
+
+    /** The text preview: an over-scan window of lines that scrolls by moving (refilled off screen, swapped in when laid out). */
     function renderPreviewText(): void {
+      if (!pvWin) return;
       const isText = preview?.type === 'text';
-      pvBody.visible = pvNums.visible = isText;
       const visible = pvLines();
       const over = isText && hlLines.length > visible;
       pvTrack.visible = pvThumb.visible = over;
-      if (!isText) { pvBody.set(''); pvNums.set(''); pvFrom = -1; return; }
+      if (!isText) {
+        pvWin.reset();
+        pvBusy = false;
+        return;
+      }
       pvSc.setMax(Math.max(0, hlLines.length - visible));
-      const from = firstOf(pvSc.pos);
       const lh = CODE * CODE_LH;
-      const top = pvTextTop() + Math.max(0, pvSc.pos - from) * lh;
-      pvBody.position.y = top;
-      pvNums.position.y = top;
+      pvBusy = pvWin.update(pvSc.pos, visible, hlLines.length, fillPreview);
+      for (const b of pvWin.bufs) {
+        if (b.from < 0) continue;
+        const top = pvTextTop() + pvWin.offset(b, pvSc.pos) * lh;
+        for (const t of b.texts) t.position.y = top;
+      }
       if (over) {
         const rh = pvTrack.scale.y, th = Math.max(0.02, (rh * visible) / hlLines.length);
         pvThumb.scale.y = th;
         pvThumb.position.y = pvTrack.position.y + rh / 2 - th / 2 - (pvSc.pos / (hlLines.length - visible)) * (rh - th);
       }
       pvVp.update();
-      if (from === pvFrom) return;
-      pvFrom = from;
-      const shownLines = hlLines.slice(from, from + visible + 1);
-      const maxCh = Math.floor((PREV_W - 2 * PAD - 0.045) / (CODE * 0.6));
-      const shown = shownLines.map((l) => (l.length > maxCh ? l.slice(0, maxCh - 1) + '…' : l));
-      pvBody.set(shown.join('\n'));
-      const clips = shown.map((l, i) => (l.length < shownLines[i].length ? l.length - 1 : l.length));
-      setColorRanges(pvBody, hlLang ? colorRanges(hlSpans.slice(from, from + shownLines.length), shown.map((l) => l.length), syntaxInts, textInt, clips) : null);
-      pvNums.set(shownLines.map((_, i) => String(from + i + 1)).join('\n'));
     }
 
     function loadImage(src: string): void {
@@ -1197,8 +1261,8 @@ const definition: WidgetDefinition<Props> = {
       update(dt) {
         vTimer += dt || 0;
         // smooth scrolling: advance glides; move only the views that scrolled
-        for (const v of views) if (v.col && v.col.sc.step(dt || 0) && !dirty) scrollView(v);
-        if (pvSc.step(dt || 0) && !dirty && pvWanted) renderPreviewText();
+        for (const v of views) if (v.col && (v.col.sc.step(dt || 0) || v.busy) && !dirty) scrollView(v);
+        if ((pvSc.step(dt || 0) || pvBusy) && !dirty && pvWanted) renderPreviewText();
         if (pvV?.visible && (vDirty || vTimer > 0.25)) { vDirty = false; vTimer = 0; renderVideoControls(); }
         const wasDirty = dirty;
         if (dirty) { dirty = false; render(); }
