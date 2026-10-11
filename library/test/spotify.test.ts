@@ -97,3 +97,10 @@ it('the like button shows and toggles Liked Songs membership', async () => {
   expect(requests(h).at(-1)).toEqual({ cmd: 'like', uri: 'spotify:track:t1', liked: true });
   h.dispose();
 });
+
+it('after a skip, audio from before the jump (older generation) is dropped', async () => {
+  const { chunkOf } = await import('../widgets/spotify/widget.ts');
+  const chunk = (gen: number) => ({ $tensor: true, dtype: 'i16', shape: [6], data: new Int16Array([0x5350, gen, 1, 2, 3, 4]) });
+  expect(chunkOf(chunk(7) as never)).toEqual({ gen: 7, pcm: new Int16Array([1, 2, 3, 4]) });
+  expect(chunkOf({ $tensor: true, dtype: 'i16', shape: [2], data: new Int16Array([1, 2]) } as never)).toBeNull(); // untagged
+});
