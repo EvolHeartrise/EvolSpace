@@ -124,7 +124,7 @@ function cover(url, onReady) {
   const file = path.join(MEDIA, name);
   if (fs.existsSync(file)) { art.set(url, `/media/${name}`); return `/media/${name}`; }
   if (!v) {
-    art.set(url, (async () => {
+    art.set(url, limited(async () => {
       try {
         const r = await fetch(url, { signal: AbortSignal.timeout(15_000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -134,9 +134,19 @@ function cover(url, onReady) {
         art.set(url, `/media/${name}`);
         onReady?.();
       } catch { art.delete(url); }
-    })());
+    }));
   }
   return undefined;
+}
+
+/** At most 4 art downloads at a time (a long list must not open hundreds of requests). */
+let active = 0;
+const waiting = [];
+function limited(job) {
+  return new Promise((resolve) => {
+    const run = () => { active++; job().finally(() => { active--; waiting.shift()?.(); resolve(); }); };
+    if (active < 4) run(); else waiting.push(run);
+  });
 }
 
 // ---------------------------------------------------------------- go-librespot
@@ -182,6 +192,7 @@ export function configYaml() {
     '  image_size: large',
     'metadata:',
     '  enabled: true',
+    '  max_tracks: 2000', // long Liked Songs
     'cache:',
     '  enabled: true',
     `  dir: ${JSON.stringify(path.join(DATA, 'cache'))}`,
@@ -339,15 +350,32 @@ async function library() {
   return items;
 }
 
+/** Liked Songs: the widget asks for spotify:collection:tracks, go-librespot knows it as the user's collection. */
+const contextUri = (uri) => (uri === 'spotify:collection:tracks' && state.user ? `spotify:user:${state.user}:collection` : uri);
+
 async function contextTracks(uri) {
   // go-librespot resolves contexts lazily: poll until ready.
   for (let i = 0; i < 20; i++) {
-    const r = await api('GET', `/context/tracks?uri=${encodeURIComponent(uri)}`);
-    const tracks = r?.tracks ?? r?.items ?? [];
-    if (!r || r.ready !== false) return { name: r?.name ?? '', items: tracks.map((t) => trackItem(t, cover(t.album_cover_url ?? t.image_url))) };
+    const r = await api('GET', `/context/tracks?uri=${encodeURIComponent(contextUri(uri))}`);
+    // Entries are {track: {...}} (go-librespot v0.10); older/other shapes are the track itself.
+    const tracks = (r?.tracks ?? r?.items ?? []).map((e) => e?.track ?? e).filter((t) => t?.uri);
+    const done = !r || (r.ready !== false && (r.cached == null || r.length == null || r.cached >= r.length));
+    if (done) return { name: r?.name ?? '', items: tracks.map((t) => trackItem(t, cover(t.album_cover_url ?? t.image_url, () => republishTracks(uri)))) };
     await new Promise((res) => setTimeout(res, 500));
   }
   throw new Error('timed out loading tracks');
+}
+
+/** Album art finished downloading for a list somebody is looking at: resend it (throttled per list). */
+const lastTracksReply = new Map(); // context uri → reply fn
+const artTimers = new Map();
+function republishTracks(uri) {
+  if (artTimers.has(uri) || !lastTracksReply.has(uri)) return;
+  artTimers.set(uri, setTimeout(async () => {
+    artTimers.delete(uri);
+    const send = lastTracksReply.get(uri);
+    try { const r = await contextTracks(uri); send?.({ kind: 'tracks', uri, name: r.name, items: r.items }); } catch { /* next time */ }
+  }, 1500));
 }
 
 let token = null;
@@ -410,9 +438,7 @@ async function onRequest(req) {
     switch (req.cmd) {
       case 'play': {
         if (!/^spotify:/.test(String(req.uri ?? ''))) throw new Error('play needs a spotify: uri');
-        // Liked Songs plays as the user's collection context.
-        const uri = req.uri === 'spotify:collection:tracks' && state.user ? `spotify:user:${state.user}:collection` : req.uri;
-        await api('POST', '/player/play', { uri, ...(req.skipTo ? { skip_to_uri: req.skipTo } : {}) });
+        await api('POST', '/player/play', { uri: contextUri(req.uri), ...(req.skipTo ? { skip_to_uri: req.skipTo } : {}) });
         break;
       }
       case 'resume': case 'pause': case 'playpause': case 'next': case 'prev':
@@ -430,8 +456,10 @@ async function onRequest(req) {
       case 'search': await search(req.query); break;
       case 'library': reply?.({ kind: 'library', items: await library() }); break;
       case 'tracks': {
-        const r = await contextTracks(String(req.uri));
-        reply?.({ kind: 'tracks', uri: req.uri, name: r.name, items: r.items });
+        const uri = String(req.uri);
+        if (reply) lastTracksReply.set(uri, reply);
+        const r = await contextTracks(uri);
+        reply?.({ kind: 'tracks', uri, name: r.name, items: r.items });
         break;
       }
       case 'refresh': await refresh(); break;
