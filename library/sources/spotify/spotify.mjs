@@ -251,34 +251,36 @@ async function api(method, p, body) {
 const gate = { open: true, apply: () => {} };
 
 /**
- * A jump (skip, play, seek), once the player has done it: whatever it had already written — the full
- * pipe (it blocks on it while we pace) plus its own output buffer — is the old position's audio. Read it
- * as fast as possible and throw it away until the stream pauses (the player loading the new track), or at
- * most DISCARD_MAX bytes (an instant seek has no pause), then start a new generation.
+ * A jump (skip, play, seek). go-librespot keeps playing the old track while it loads the new one and
+ * only then swaps streams (emitting `metadata`; a seek emits `seek`), and its pipe output has no drop:
+ * whatever it already wrote still reaches us. So from the command on, read the pipe as fast as it comes
+ * and throw it away (that is all old audio) until the switch event, then a little more for the old
+ * audio still in the pipe / its output block, and only then publish again, as a new generation.
  */
-const DISCARD_MAX = 96 * 1024; // ≈ 0.55 s
-const DISCARD_GAP_MS = 40;
-let discarding = null; // {bytes, until, timer}
+const RESIDUE = 16 * 1024; // ≈ 90 ms: what can still sit in the pipe when the switch event arrives
+let discarding = null; // {kind: 'track'|'seek', switched, post, until}
 const reader = { reset: () => {}, flow: () => {} };
-function jumpDone() {
-  gen = (gen + 1) & 0x7fff;
-  if (discarding) clearTimeout(discarding.timer);
-  discarding = { bytes: 0, until: Date.now() + 1500, timer: null };
-  armGap();
+function beginJump(kind) {
+  discarding = { kind, switched: false, post: RESIDUE, until: Date.now() + 8000, at: Date.now(), switchedAt: 0, drained: 0 };
   reader.reset();
   reader.flow();
-  setState({ gen });
 }
-function armGap() {
-  if (!discarding) return;
-  clearTimeout(discarding.timer);
-  discarding.timer = setTimeout(endDiscard, DISCARD_GAP_MS);
+/** go-librespot event during a jump: the new stream is playing. */
+function jumpEvent(type) {
+  if (!discarding || discarding.switched) return;
+  if ((discarding.kind === 'track' && type === 'metadata') || (discarding.kind === 'seek' && type === 'seek')) {
+    discarding.switched = true;
+    discarding.switchedAt = Date.now();
+  }
 }
 function endDiscard() {
   if (!discarding) return;
-  clearTimeout(discarding.timer);
+  const d = discarding;
+  console.log(`jump (${d.kind}): ${d.switched ? `switched after ${d.switchedAt - d.at} ms` : 'no switch event'}, dropped ${Math.round(d.drained / 1024)} KB of old audio`);
   discarding = null;
+  gen = (gen + 1) & 0x7fff;
   reader.reset();
+  setState({ gen });
 }
 
 function readAudio() {
@@ -297,9 +299,12 @@ function readAudio() {
   reader.flow = () => { paced = false; clearTimeout(resumeTimer); if (gate.open) stream.resume(); };
   stream.on('data', (data) => {
     if (discarding) {
-      discarding.bytes += data.length;
-      if (discarding.bytes < DISCARD_MAX && Date.now() < discarding.until) { armGap(); return; }
-      endDiscard(); // cap reached: this read is already the new audio's
+      discarding.drained += data.length;
+      if (!discarding.switched && Date.now() < discarding.until) return; // old audio: drain it
+      if (discarding.switched && discarding.post > data.length) { discarding.post -= data.length; return; }
+      if (discarding.switched) data = data.subarray(discarding.post);
+      endDiscard();
+      if (!data.length) return;
     }
     pending = pending.length ? Buffer.concat([pending, data]) : data;
     const now = Date.now();
@@ -405,6 +410,7 @@ function listenEvents() {
     let m = null;
     try { m = JSON.parse(String(ev.data)); } catch { /* ignore */ }
     if (m?.type === 'playback_error') setState({ error: m.data?.message || m.data?.kind || 'playback error' });
+    if (m?.type) jumpEvent(m.type);
     void refresh();
   };
   ws.onopen = () => void refresh();
@@ -519,6 +525,8 @@ function publishSearchSoon() {
 async function onRequest(req) {
   if (!req || typeof req !== 'object') return;
   const reply = typeof req.reply === 'string' && req.reply.startsWith(`${P}.`) ? (v) => publish(req.reply, { nonce: req.nonce ?? null, ...v }) : null;
+  const jumpKind = ['play', 'next', 'prev'].includes(req.cmd) ? 'track' : req.cmd === 'seek' ? 'seek' : null;
+  if (jumpKind) beginJump(jumpKind);
   try {
     switch (req.cmd) {
       case 'play': {
@@ -555,9 +563,9 @@ async function onRequest(req) {
       case 'refresh': await refresh(); break;
       default: return;
     }
-    if (['play', 'next', 'prev', 'seek'].includes(req.cmd)) jumpDone();
     if (['play', 'resume', 'pause', 'playpause', 'next', 'prev', 'seek', 'volume', 'shuffle', 'repeat'].includes(req.cmd)) void refresh();
   } catch (e) {
+    if (jumpKind) endDiscard(); // the jump didn't happen: keep playing
     console.error(`${req.cmd}: ${e.message}`);
     if (reply) reply({ kind: req.cmd, error: e.message, items: [] });
     else setState({ error: `${req.cmd}: ${e.message}` });
