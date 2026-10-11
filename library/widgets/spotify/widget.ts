@@ -37,6 +37,8 @@ interface State {
   volume?: number; shuffle?: boolean; repeatContext?: boolean; repeatTrack?: boolean; contextUri?: string; contextName?: string;
   /** The current track is in Liked Songs. */
   liked?: boolean;
+  /** The upcoming track and the one before (for an instant next / previous). */
+  next?: Track; prev?: Track;
 }
 interface Item { uri: string; kind: string; name: string; sub: string; image?: string; duration?: number; context?: string }
 
@@ -175,6 +177,27 @@ const definition: WidgetDefinition<Props> = {
         else return expected;
       }
       return positionNow(st);
+    }
+    /** The track the user just switched to, shown until the source reports it (or a little while passes). */
+    let optimisticTrack: { track: Track; at: number } | null = null;
+    /** The last track shown: kept while the player loads the next one (instead of "Nothing playing"). */
+    let lastShown: Track | null = null;
+    function shownTrack(): Track | undefined {
+      if (optimisticTrack) {
+        if (st?.track?.uri === optimisticTrack.track.uri || Date.now() - optimisticTrack.at > 8000) optimisticTrack = null;
+        else return optimisticTrack.track;
+      }
+      if (st?.track) lastShown = st.track;
+      else if (st?.stopped) lastShown = null;
+      return st?.track ?? lastShown ?? undefined;
+    }
+    /** Switch the player display to `track` right away (position 0). */
+    function switchTo(track: Track | undefined): void {
+      if (!track) return;
+      optimisticTrack = { track, at: Date.now() };
+      optimisticPos = { pos: 0, at: Date.now(), uri: track.uri };
+      dirty = true;
+      progressDirty = true;
     }
     let optimisticLiked: { uri: string; v: boolean; until: number } | null = null;
     const listScroll = new SmoothScroll();
@@ -600,7 +623,7 @@ const definition: WidgetDefinition<Props> = {
         return;
       }
       // now playing
-      const t = st?.track;
+      const t = shownTrack();
       setMap(artMat!, t?.cover);
       title!.set(truncate(t?.name ?? 'Nothing playing', 22));
       artists!.set(truncate(t ? t.artists.join(', ') : st?.contextName || 'Pick something from your library', 34));
@@ -671,7 +694,7 @@ const definition: WidgetDefinition<Props> = {
 
     function renderProgress(): void {
       if (!group || st?.auth !== 'ready') return;
-      const t = st?.track;
+      const t = shownTrack();
       const d = N.progress.userData as { x0: number; w: number };
       const dur = t?.duration ?? 0;
       const pos = dragSeek ?? shownPosition();
@@ -691,7 +714,7 @@ const definition: WidgetDefinition<Props> = {
     };
 
     function tap(part: string): void {
-      const t = st?.track;
+      const t = shownTrack();
       switch (part) {
         case 'play': {
           const paused = !!(st?.paused || st?.stopped);
@@ -700,8 +723,13 @@ const definition: WidgetDefinition<Props> = {
           if (!paused) player?.flush();
           break;
         }
-        case 'prev': request({ cmd: 'prev' }); jumped(); break;
-        case 'next': request({ cmd: 'next' }); jumped(); break;
+        case 'prev':
+          // Spotify: "previous" restarts the song unless it just started
+          if (shownPosition() > 3000) { if (t) switchTo(t); } else switchTo(st?.prev);
+          request({ cmd: 'prev' });
+          jumped();
+          break;
+        case 'next': switchTo(st?.next); request({ cmd: 'next' }); jumped(); break;
         case 'shuffle': request({ cmd: 'shuffle', on: !st?.shuffle }); break;
         case 'repeat': request({ cmd: 'repeat', mode: st?.repeatTrack ? 'off' : st?.repeatContext ? 'track' : 'context' }); break;
         case 'like':
@@ -733,6 +761,7 @@ const definition: WidgetDefinition<Props> = {
               // play it within what it was listed in (playlist / album / liked), else its album
               const context = open?.uri ?? (ctx.props.tab === 'liked' ? 'spotify:collection:tracks' : it.context);
               request(context ? { cmd: 'play', uri: context, skipTo: it.uri } : { cmd: 'play', uri: it.uri });
+              switchTo({ uri: it.uri, name: it.name, artists: it.sub ? [it.sub] : [], album: '', albumUri: '', cover: it.image, duration: it.duration ?? 0 });
               jumped();
             } else if (it.kind === 'collection') {
               ctx.setProps({ tab: 'liked' });
