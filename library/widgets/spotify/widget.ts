@@ -162,7 +162,7 @@ const definition: WidgetDefinition<Props> = {
     /** A skip / play / seek from here: silence at once and ignore the old position's audio still in flight. */
     function jumped(): void {
       player?.flush();
-      if (lastGen >= 0) awaitGen = { from: lastGen, until: Date.now() + 2500 };
+      if (lastGen >= 0) awaitGen = { from: lastGen, until: Date.now() + 8000 }; // the source sends nothing until the new track plays
     }
     /** Where the user just seeked/skipped to, shown until the source reports the new position. */
     let optimisticPos: { pos: number; at: number; uri: string } | null = null;
