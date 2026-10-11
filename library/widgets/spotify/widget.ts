@@ -158,6 +158,11 @@ const definition: WidgetDefinition<Props> = {
     let offAudio: (() => void) | null = null;
     const canPlay = !ctx.isMirror && typeof (globalThis as { AudioContext?: unknown }).AudioContext === 'function';
     const me = () => ctx.client.id;
+    /** Paused as far as this widget knows: the user's own tap counts before the source confirms it. */
+    function pausedNow(): boolean {
+      if (optimisticPaused && optimisticPaused.until > Date.now()) return optimisticPaused.v;
+      return !!(st?.paused || st?.stopped);
+    }
     function claimOutput(): void {
       if (ctx.isMirror || !me() || output === me()) return;
       output = me()!;
@@ -170,7 +175,8 @@ const definition: WidgetDefinition<Props> = {
         player ??= new PcmPlayer();
         let initial = true; // the channel's cached last chunk arrives synchronously: stale
         offAudio = ctx.channels.subscribe(`${prefix()}.audio.stream`, (v) => {
-          if (initial) return;
+          // Chunks still in flight when playback pauses must not play after the pause.
+          if (initial || pausedNow()) return;
           const pcm = pcmOf(v);
           if (pcm) player?.push(pcm);
         });
@@ -475,7 +481,8 @@ const definition: WidgetDefinition<Props> = {
         if (uri !== lastTrack && st?.track) ctx.emit('playing', { uri, name: st.track.name, artists: st.track.artists, album: st.track.album });
         lastTrack = uri;
         lastPaused = st?.paused;
-        optimisticPaused = null;
+        // The source caught up with the tap (a stale state from before it must not undo it).
+        if (optimisticPaused && !!(st?.paused || st?.stopped) === optimisticPaused.v) optimisticPaused = null;
         dirty = true;
         progressDirty = true;
       }));
