@@ -98,3 +98,23 @@ describe('UiKit text sanitization', () => {
     expect(t.syncCount).toBe(0);
   });
 });
+
+describe('fallback fonts', () => {
+  it('lets uncovered non-emoji characters through once enabled, keeps emoji mapped', async () => {
+    const g = await import('../src/ui/glyphs.ts');
+    expect(g.sanitizeText('天使の電池')).toBe('□□□□□');
+    g.setFontFallback(true);
+    try {
+      expect(g.sanitizeText('天使の電池 · 心')).toBe('天使の電池 · 心');
+      // decorative combining marks the fonts lack are dropped; ones Inter has stay
+      const z = g.sanitizeText('Z̴̢a̵l̶g̷o');
+      expect(z.replace(/\p{M}/gu, '')).toBe('Zalgo');
+      expect([...z].every((c) => g.hasGlyph('sans', c.codePointAt(0)!))).toBe(true);
+      expect(g.sanitizeText('नमस्ते')).toBe('नमस्ते'); // a script's own marks stay (its fallback font draws them)
+      expect(g.sanitizeText('ok ✅ 🎧')).toBe('ok ✓ □'); // emoji: look-alike or □
+      expect(g.sanitizeText('a‍b')).toBe('ab'); // invisible format characters still dropped
+    } finally {
+      g.setFontFallback(false);
+    }
+  });
+});

@@ -220,6 +220,12 @@ rt.update(dt, t); renderer.render(scene, camera);
   becomes two spaces, other control and invisible format characters are
   dropped, common emoji become look-alikes (✅→✓, ❌→×, 🚀→→), and anything
   else uncovered becomes □. The coverage tables come from the fonts' cmaps.
+  Fallback fonts: once `GET /fonts/unicode/available` says the server can serve
+  them, uncovered non-emoji characters (Japanese, Arabic, Devanagari, …) pass
+  through instead, and troika loads the matching Noto font from the server's
+  same-origin cache of unicode-font-resolver (`data/fonts/unicode`, filled on
+  first use). Decorative combining marks the fonts lack are dropped (zalgo
+  text stays readable).
   After replacing a font, run
   `node packages/runtime/scripts/gen-glyph-coverage.mjs` (a test fails if the
   tables are stale).

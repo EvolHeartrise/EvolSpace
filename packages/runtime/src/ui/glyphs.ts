@@ -10,6 +10,12 @@
 // Rules: CR/CRLF → LF, tab → two spaces, other control and invisible
 // format characters (variation selectors, ZWJ…) are dropped, a few common
 // emoji map to covered look-alikes, everything else uncovered becomes '□'.
+//
+// Fallback fonts: once the server confirms it can serve unicode-font-resolver's
+// fonts same-origin (GET /fonts/unicode/available, cached under data/fonts),
+// setFontFallback(true) lets uncovered non-emoji characters through — Japanese,
+// Arabic, combining marks, … — and troika loads the matching Noto font from there.
+// Emoji stay mapped (troika draws one color, so they would be plain outlines).
 // A leading newline gets a space in front (troika resolves a font for the
 // first character even when it is whitespace, and no font has U+000A).
 
@@ -62,11 +68,29 @@ export function hasGlyph(set: GlyphSet, cp: number): boolean {
   return covered(set === 'mono' ? MONO_RANGES : SANS_RANGES, cp);
 }
 
+/**
+ * Marks that belong to a script's own spelling (Devanagari, Arabic, Hebrew, Thai, …: U+0590 and up, outside the
+ * generic combining blocks) — kept, the fallback font for that script draws them.
+ */
+function isScriptMark(cp: number): boolean {
+  const generic = (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x1dc0 && cp <= 0x1dff)
+    || (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe20 && cp <= 0xfe2f);
+  return !generic;
+}
+
 /** Invisible format characters that are safe to drop (VS1–16, ZWJ/ZWNJ/ZWSP, word joiner, BOM, tags, VS17+). */
 function isIgnorable(cp: number): boolean {
   return (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x200b && cp <= 0x200f) || cp === 0x2060 || cp === 0xfeff
     || (cp >= 0xe0000 && cp <= 0xe007f) || (cp >= 0xe0100 && cp <= 0xe01ef) || (cp >= 0x1f3fb && cp <= 0x1f3ff);
 }
+
+let fallback = false;
+/** Let uncovered (non-emoji) characters through to troika's same-origin fallback fonts. */
+export function setFontFallback(on: boolean): void { fallback = on; }
+export function fontFallback(): boolean { return fallback; }
+const PICTO = /\p{Extended_Pictographic}/u;
+/** Combining marks: drawn on top of the previous letter by the same font, so an uncovered one is dropped (□ would break the word). */
+const MARK = /\p{M}/u;
 
 // Printable ASCII + LF: covered by both fonts (checked in tests) — the fast path.
 const SAFE = /^[\x20-\x7e\n]*$/;
@@ -88,6 +112,9 @@ export function sanitizeText(text: string, set: GlyphSet = 'sans'): string {
     if (cp < 0x20 || (cp >= 0x7f && cp < 0xa0)) continue; // other control characters
     if (covered(ranges, cp)) { out += String.fromCodePoint(cp); continue; }
     if (isIgnorable(cp)) continue;
+    const ch = String.fromCodePoint(cp);
+    if (MARK.test(ch) && !isScriptMark(cp)) continue; // e.g. "Z̴̢a̵l̶g̷o" → "Zalgo"
+    if (fallback && !PICTO.test(ch)) { out += ch; continue; }
     const alt = LOOKALIKE[cp];
     out += alt && covered(ranges, alt.codePointAt(0)!) ? alt : REPLACEMENT;
   }

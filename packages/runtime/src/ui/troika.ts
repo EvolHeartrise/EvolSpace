@@ -4,13 +4,21 @@
 import { Text, configureTextBuilder, preloadFont } from 'troika-three-text';
 import type { TextFactory, TextLike } from './UiKit.ts';
 import { FONTS, PRELOAD_CHARS, fontUrl, type FontKey } from './fonts.ts';
+import { setFontFallback } from './glyphs.ts';
 
 let configured = false;
 
 export function configureTroika(fontBase?: string): void {
   if (configured) return;
   configured = true;
-  configureTextBuilder({ defaultFontURL: fontUrl('sans', fontBase), useWorker: true });
+  // Fallback fonts come from the EvolSpace server (absolute: troika resolves them in a worker).
+  const origin = typeof location !== 'undefined' ? location.origin : '';
+  configureTextBuilder({ defaultFontURL: fontUrl('sans', fontBase), useWorker: true, ...(origin ? { unicodeFontsURL: `${origin}/fonts/unicode` } : {}) });
+  if (origin && typeof fetch === 'function') {
+    // Only let uncovered characters through once the server can actually serve the fonts:
+    // otherwise troika falls back to its CDN, and offline the text would never finish typesetting.
+    void fetch(`${origin}/fonts/unicode/available`).then((r) => r.json()).then((j: { ok?: boolean }) => setFontFallback(!!j?.ok), () => {});
+  }
 }
 
 export const troikaTextFactory: TextFactory = () => new Text() as unknown as TextLike;
