@@ -12,5 +12,5 @@ Tests: `library/test/shared.test.ts` (`npx vitest run library/test`).
 Conventions:
 - Functions that run per frame take `out`/scratch objects instead of allocating.
 - Anything that creates GPU resources marks shared ones with `userData.evolShared`
-  (the runtime never disposes those) — see `resources.ts`.
+  (the runtime never disposes those) - see `resources.ts`.
 - Keep modules small and focused; add a test for each new helper.

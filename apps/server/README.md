@@ -15,8 +15,8 @@ npx tsx apps/server/src/main.ts       # plain run
 
 Startup prints the local API URL and the `https://<LAN-IP>:8443/` URLs to open
 on the Quest (accept the self-signed certificate once). The cert is regenerated
-(and must be re-accepted) only when a *primary* LAN address is new — a
-private-range IPv4 on a physical interface — or near expiry / on a hostname
+(and must be re-accepted) only when a *primary* LAN address is new - a
+private-range IPv4 on a physical interface - or near expiry / on a hostname
 change. WSL/Hyper-V/Docker/VPN adapters and link-local 169.254.x addresses are
 ignored for that decision, and new certs keep earlier addresses as SANs.
 
@@ -75,7 +75,7 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
 
 ## Design notes (things clients rely on)
 
-**Security (browser origins)** — `src/http/origin.ts`
+**Security (browser origins)** - `src/http/origin.ts`
 - The API can inject requests into Claude Code (`agent.ask`), so web pages in the
   user's browser must not reach it. Requests whose `Host` header doesn't name this
   machine (loopback, its IPs, its hostname incl. `<host>.local`/`.lan`) are refused
@@ -104,14 +104,14 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
   Subscribing delivers the current value immediately.
 - **Backpressure:** control messages are always queued. Channel values are
   coalesced latest-per-channel while `bufferedAmount` > 1 MB, then flushed as the
-  socket drains — a slow Quest gets the newest tensor, never a backlog.
+  socket drains - a slow Quest gets the newest tensor, never a backlog.
 - Invalid `scene.ops` from a client → the client gets a fresh `scene.snapshot`
   (to undo optimism) and a `client.log` warn event is recorded. A failed WS
   `command` sends that client an `agent.message` of kind `error`.
 - Binary frames: `AUD0…` → `VoiceService.onAudio`; anything else is a tensor
   frame published to `header.channel`.
 - **Liveness:** `{type:'command', name:'ping'}` is answered (to the sender only) with
-  `{type:'command', name:'pong'}` — clients treat any inbound message as "alive" and
+  `{type:'command', name:'pong'}` - clients treat any inbound message as "alive" and
   should ignore `pong`. Over HTTP, `ping` returns `{ok: true}`.
 - On disconnect the server tells voice (`VoiceService.onDisconnect`), which drops that
   client's utterances still being recorded right away (not after the 10 s stale timer).
@@ -126,7 +126,7 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
 - Prop types are checked against the widget manifest (errors); unknown props are
   **warnings** returned from `POST /api/scene/ops` (widgets may persist private state).
 - In `update` patches, `null` clears optional fields (`name`, `anchor`, `tags`,
-  `interactions`, `locked`) — used by inverse ops for undo.
+  `interactions`, `locked`) - used by inverse ops for undo.
 - Undo grouping: same `group` id (one grab), or same interactive source
   (`user`/`widget`/`voice`) within 400 ms. Agent batches are separate steps.
   A batch that changes nothing (every op re-sets current values, `clear` on an empty
@@ -178,7 +178,7 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
   `cmd.exe` with quoted args (Node can't spawn them directly).
 - Orphans: running children are recorded in `data/sources.pids.json`. If the server
   was hard-killed (Task Manager, `tsx watch` restarts on Windows), the next boot kills
-  those process trees — only if the pid still runs the same executable — before
+  those process trees - only if the pid still runs the same executable - before
   autostarting (otherwise e.g. a stale STT keeps port 8790).
 
 **Other**
@@ -189,7 +189,7 @@ src/mirror, src/voice  owned by the mirror / voice components (imported via inde
   `pose.recording` is accepted from the reconnected client for 10 s.
 - `user.pose` without a valid `head` is ignored (one `client.log` warning per client).
 - `/widgets/:id.js` answers `If-None-Match` with 304.
-- Screenshot/thumbnail errors (`routes/mirror-errors.ts`): request problems are 4xx —
+- Screenshot/thumbnail errors (`routes/mirror-errors.ts`): request problems are 4xx -
   `ScreenshotRequestError` and page-side request errors (invalid background, unknown
   widget/entity, a widget that fails to load or reports a render error) → 400; unknown
   entity (entity view) / widget (widget view) are pre-checked → 404; `user` view without a

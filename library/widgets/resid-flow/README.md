@@ -1,6 +1,6 @@
 # resid-flow
 
-The residual stream of a transformer as a 3D flow through its layers — the first
+The residual stream of a transformer as a 3D flow through its layers - the first
 interpretability visualizer of EvolSpace. It consumes the **Interp data contract**
 (ARCHITECTURE.md) on channels `<prefix>.*` (default prefix `interp`).
 
@@ -23,14 +23,14 @@ interpretability visualizer of EvolSpace. It consumes the **Interp data contract
 | Token trajectories | `P.resid.proj` `[L+1,T,3]` | Catmull-Rom tube through each token's projected residual (comp 0 → x, comp 1 → z, optional comp 2 → y jitter); width/brightness by `P.resid.norm`; color by token group (`P.meta.tokens[].group`, theme palette). Scaling per `normalize` (below); layers magnified by `auto`/`per-layer` show their gain in the layer label (`embed ×4.2`) |
 | Header | `P.meta` | title = `meta.short_name`, else `meta.model` cut to one line at a word boundary (`…`); the checkpoint path is never shown. Subtitle: sample, lens layer/token, `T tokens × L+1 layers` (+ `unit-norm proj` when `meta.proj.normalized`), the groups separated by ` \| ` (troika collapses runs of spaces). All header lines are single lines fitted to the width left of the readout column |
 | Masked positions | `P.resid.mask` (u8) | no node; a trajectory ends / splits at masked layers |
-| Flow particles | — | comets travelling upward in the trajectory shader (`uTime`), zero extra draw calls |
+| Flow particles | - | comets travelling upward in the trajectory shader (`uTime`), zero extra draw calls |
 | Attn / MLP ticks | `P.resid.delta` `[L,2,T]` | block b's writes drawn at the node it produced (layer b+1); attn = accent, MLP = accent2; bright at the lens layer / selected token |
 | Lens plane + handle | `layer` input, `P.ctl.layer` | highlighted plane at the selected layer; trajectories glow where they cross it |
 | Selected token | `token` input, `P.ctl.token` | widened + ringed; others dimmed (`dimOthers`) |
 | Attention arcs | `P.attn` `[L,H,T,T]` | in the lens plane l, block l−1's attention (the one that wrote this residual) from the selected query to its top-k keys (`attnHead` = −1 → mean over heads); particles flow key → query. `P.attn` is only subscribed while `showAttn` is on (it is the largest tensor) |
-| Readout panel | `P.lens.readout` | single-line title + labeled bars right of the lens handle; "updating…" while its layer/token differ from the selection. The label column widens for descriptive labels (up to 30 chars, longer ones cut at a word boundary) and the panel for a long title (0.32–0.52 m). Bars are scaled by the largest \|value\| of the readout (values may exceed 1); `null`/non-numeric values show `—` and no bar; \|v\| < 1e-9 shows `0`. The panel follows the lens but is clamped to the stack's height (±2 cm), so it never reaches the header |
+| Readout panel | `P.lens.readout` | single-line title + labeled bars right of the lens handle; "updating…" while its layer/token differ from the selection. The label column widens for descriptive labels (up to 30 chars, longer ones cut at a word boundary) and the panel for a long title (0.32–0.52 m). Bars are scaled by the largest \|value\| of the readout (values may exceed 1); `null`/non-numeric values show ` - ` and no bar; \|v\| < 1e-9 shows `0`. The panel follows the lens but is clamped to the stack's height (±2 cm), so it never reaches the header |
 | Probe colors | `P.probe.<name>` `[L+1,T]` | `colorBy: 'probe'`: python/evolinterp's `2·P(true) − 1` on a **fixed** [−1, 1] diverging ramp (0 = neutral, beyond ±1 saturates); NaN = not applicable → neutral gray. (The old [0,1]/−1 convention is no longer recognized: −1 is now a valid score) |
-| Waiting panel | — | shown until a usable `P.resid.proj` exists; lists every channel as ok / -- / bad (with the offending shape) |
+| Waiting panel | - | shown until a usable `P.resid.proj` exists; lists every channel as ok / -- / bad (with the offending shape) |
 
 ## Interaction
 
@@ -45,7 +45,7 @@ Widget default binding `resid-pick` (pinch, `near`, handler `pick`; the entity-d
 - pinching anything else (header, panel, empty space) falls through to the standard grab
 
 Selection sources, latest wins: user interaction (emit + publish + `select` widget
-event), `P.ctl.*` channels (emit, so linked sliders follow), input ports (view only — publish
+event), `P.ctl.*` channels (emit, so linked sliders follow), input ports (view only - publish
 through the channel, as the prefab does with the slider's `commit`), and the producer's
 `P.lens.readout` layer/token until anything else chose a selection. The `sample` input is
 forwarded to `P.ctl.sample`: feed it from a user-gesture output (a slider's `commit`), not
@@ -56,7 +56,7 @@ from a port that emits on create, or every client load resets the producer's sam
 `prefix`, `width` (plane size, 0.6 m), `height` (stack height, 0.8 m) / `layerSpacing`
 (fixed, 0 = auto), `normalize`: `auto` (default) = one global center/scale, but a layer whose
 spread would cover < 40 % of the plane is magnified about its centroid (the centroid keeps its
-global position, so drift between layers stays true; the label shows the gain) — early layers
+global position, so drift between layers stays true; the label shows the gain) - early layers
 no longer collapse to a dot when residual norms grow with depth; `global` = one scale for all
 (shows growth); `per-layer` (old name `layer`) = every layer centered and filling its plane.
 With interp's per-vector-normalized projections (`meta.proj.normalized`), `auto` is usually
@@ -136,7 +136,7 @@ the real slider in every creation order (incl. a 2048-sample dataset and a model
 - **Picking** via one invisible proxy per layer (`ctx.interactive`). Their custom raycast
   resolves the whole stack once per ray (`rayStack`, cached across the proxies): the
   nearest node the ray visually passes through, else the closest node within 1.8 cm,
-  else the first plane footprint crossed — and only the winning layer's proxy reports a
+  else the first plane footprint crossed - and only the winning layer's proxy reports a
   hit. (Per-layer plane hits would let a nearer plane shadow every interior node for any
   angled ray.) Each proxy's thin bounding box is the touch target, so pinching between
   layers still grabs the widget. Floating labels (hover/selection/lens) never raycast. Hit points land

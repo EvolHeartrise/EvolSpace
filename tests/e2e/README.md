@@ -48,6 +48,6 @@ Requirements: Playwright Chromium (`npx playwright install chromium`), and for s
 
 Screenshots are saved to `data/e2e/` (gitignored) for inspection:
 
-- `01-mcp-camera.png`, `01-mcp-entity-box.png` — the spawned box via the MCP `screenshot` tool
-- `03-link-slider-number.png` — the linked slider + number after the drag
-- `07-interp-resid-flow.png`, `07-interp-resid-flow-layer.png` — the resid-lens rig on the toy model, before and after moving the lens layer
+- `01-mcp-camera.png`, `01-mcp-entity-box.png` - the spawned box via the MCP `screenshot` tool
+- `03-link-slider-number.png` - the linked slider + number after the drag
+- `07-interp-resid-flow.png`, `07-interp-resid-flow-layer.png` - the resid-lens rig on the toy model, before and after moving the lens layer

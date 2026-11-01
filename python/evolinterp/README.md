@@ -1,4 +1,4 @@
-# evolinterp — interp backend
+# evolinterp - interp backend
 
 Mechanistic-interpretability backend for EvolSpace. It loads a model (the
 user's **BeatSaberRL** NotePolicy, or a **toy** transformer testbed), runs an
@@ -34,7 +34,7 @@ uv sync                                   # Python 3.12 venv in .venv with CPU t
 
 `setup-bsrl` runs `git -C <BeatSaberRL> archive exp/bend7 python` (read-only; `$EVOL_BSRL_REPO`, default: the
 `BeatSaberRL` folder next to this repo, e.g. `D:/Git/BeatSaberRL`) and
-extracts into `data/bsrl/python` — it never touches the BSRL working tree or
+extracts into `data/bsrl/python` - it never touches the BSRL working tree or
 branches. No Rust, CUDA or gymnasium is needed: `beat_arena_env` is stubbed so
 only `beat_arena_env/constants.py` loads (its `__init__` imports the Rust sim).
 
@@ -60,7 +60,7 @@ sources also pass `--source <id>`.
 process publishes carries `owner: {id, pid, host, source, model, prefix, since}` and
 `ts`, re-published every 5 s (heartbeat, `evolinterp/lease.py`). A starting process
 reads `P.status` first; if another owner is active (different id, `state` not
-`stopped`, heartbeat younger than 20 s, and — on this host — its pid still alive) it
+`stopped`, heartbeat younger than 20 s, and - on this host - its pid still alive) it
 **refuses before loading anything**: it prints
 `refusing to start source interp-bsrl: channel prefix 'interp.*' is already served by source interp-toy (...); stop it first (POST /api/sources/interp-toy/stop) or use another --prefix`
 to stderr (visible in `GET /api/sources/<id>` `logTail` and the `source.exit`
@@ -77,8 +77,8 @@ Start: MCP sources tool, `curl -X POST http://127.0.0.1:8787/api/sources/interp-
 or `Client().source("interp-bsrl", "start")`. Logs: `GET /api/sources/interp-bsrl`.
 
 Startup: first run captures all activations (~15 s for BSRL's 2048 samples)
-into `data/interp/<model_id>/capture.npz` (format v2; older caches — raw-residual
-projection — are ignored and recaptured automatically) and trains probes in a background
+into `data/interp/<model_id>/capture.npz` (format v2; older caches - raw-residual
+projection - are ignored and recaptured automatically) and trains probes in a background
 thread (~1–2 min; published when done). Later starts take ~2 s. SAEs found in
 `data/interp/<model_id>/sae-<layer>.pt` are loaded automatically.
 
@@ -101,8 +101,8 @@ checkpoint's `diag_probe_obs` for BSRL.
 
 | Channel | Produced from |
 |---|---|
-| `P.meta` | `model` — readable name, never a filesystem path (BSRL: `BeatSaberRL NotePolicy · bend7_cd1000 · upd 7000 (leaf from upd 6000) · 10L d192 h4`; toy: `toy red-majority transformer (3L d64 h4)`); `short_name` — compact label for titles (`BSRL bend7 · upd 7000`, `toy red-majority · 3L d64`); `checkpoint` — the path (BSRL `.pt`, toy weights cache); layers `embed, b0..b{L-1}`; tokens decoded from the observation (`label`, `group`, extra `detail`); `sample.label`; `lens`; `proj` — `{normalized: true, basis: "pca", explained_variance: [3 ratios]}`; extras: `heads`, `interventions` (human summary), `probes` |
-| `P.resid.proj` f32 [L+1,T,3] | each residual vector divided by its RMS (`r / sqrt(mean(r²))` — the model reads the stream through pre-LN anyway), minus the global mean of the normalized vectors, projected on the top-3 PCs of **all** meaningful normalized residuals of the dataset (all layers, one basis), scaled so the 99th-percentile radius is 1; masked positions = 0. Direction only: magnitudes live in `P.resid.norm`. Without the normalization the basis was dominated by the late layers (norms grow ~7× with depth) and early layers collapsed onto the centre |
+| `P.meta` | `model` - readable name, never a filesystem path (BSRL: `BeatSaberRL NotePolicy · bend7_cd1000 · upd 7000 (leaf from upd 6000) · 10L d192 h4`; toy: `toy red-majority transformer (3L d64 h4)`); `short_name` - compact label for titles (`BSRL bend7 · upd 7000`, `toy red-majority · 3L d64`); `checkpoint` - the path (BSRL `.pt`, toy weights cache); layers `embed, b0..b{L-1}`; tokens decoded from the observation (`label`, `group`, extra `detail`); `sample.label`; `lens`; `proj` - `{normalized: true, basis: "pca", explained_variance: [3 ratios]}`; extras: `heads`, `interventions` (human summary), `probes` |
+| `P.resid.proj` f32 [L+1,T,3] | each residual vector divided by its RMS (`r / sqrt(mean(r²))` - the model reads the stream through pre-LN anyway), minus the global mean of the normalized vectors, projected on the top-3 PCs of **all** meaningful normalized residuals of the dataset (all layers, one basis), scaled so the 99th-percentile radius is 1; masked positions = 0. Direction only: magnitudes live in `P.resid.norm`. Without the normalization the basis was dominated by the late layers (norms grow ~7× with depth) and early layers collapsed onto the centre |
 | `P.resid.norm` f32 [L+1,T] | ‖residual‖ (0 where masked) |
 | `P.resid.delta` f32 [L,2,T] | ‖attention write‖, ‖MLP write‖ of block l (after interventions) |
 | `P.resid.mask` u8 [L+1,T] | 1 = computed and not padding. BSRL: padding entity slots = 0 at every layer; the final block computes only the 5 lead tokens, so layer L entity tokens = 0 |
@@ -127,9 +127,9 @@ Republishing: sample or intervention change → everything; layer/token change �
 On (re)connect it republishes everything (a restarted server loses channels).
 Existing `P.ctl.*` values are adopted at startup (incl. `ablate`). On every
 (re)connect, control channels the server does not hold are seeded from the
-process's current state — the defaults (layer = L, token 0, sample 0, play
+process's current state - the defaults (layer = L, token 0, sample 0, play
 false) on a fresh start, the live selection (and active `ablate`) after a
-server restart — so bound sliders never show stale values. Data channels are
+server restart - so bound sliders never show stale values. Data channels are
 published before the index channels (`P.probe.index`, `P.sae.index`), so a
 consumer reacting to an index finds the channels it names.
 
@@ -176,7 +176,7 @@ block index or label (`"b3"`).
    `curl -X PUT -H "Content-Type: application/json" -d '[{"op":"head","layer":8,"head":1}]' http://127.0.0.1:8787/api/channels/interp.ctl.ablate`).
    Every channel is recomputed for the current sample under the intervention;
    the readout title shows it and adds KL vs clean. Publish `[]` to clear.
-2. **Batch, in Python** (the venv): measure effects over the dataset —
+2. **Batch, in Python** (the venv): measure effects over the dataset -
 
    ```python
    import numpy as np
@@ -211,7 +211,7 @@ block index or label (`"b3"`).
   `forward_stacked` and block hooks (`verify`, `tests/test_bsrl.py`).
 - The dataset is the checkpoint's frozen `diag_probe_obs` (2048 states from
   training rollouts, fp16-rounded). Samples are **independent states, not an
-  episode** — "play" steps through unrelated frames. Pass `--dataset` with a
+  episode** - "play" steps through unrelated frames. Pass `--dataset` with a
   sequential obs array for temporal playback.
 - No positional encoding: entity slots are sorted nearest-first, so token index
   ≠ identity across samples. Labels come from the obs lanes: colour (lanes 4/5),
@@ -223,10 +223,10 @@ block index or label (`"b3"`).
   b0..b9 instead of early layers collapsing to the centre; explained variance of
   the 3 PCs ≈ 20 %, 14 %, 10 %); read magnitudes from `P.resid.norm`
   (`python -m evolinterp capture` prints both per layer). The logit lens on early layers is off-distribution for the trunk
-  (no final LN) — read "agrees with final"/KL rather than raw confidences.
+  (no final LN) - read "agrees with final"/KL rather than raw confidences.
 - Probes are trained on entity tokens only (lead tokens show NaN). Held-out
   split is by sample. Current leaf (upd 7000): colour/cutdir/kind ≈100 % up to
-  b5–b6 and decay in the last blocks (colour 0.85 at b8) — the late stream
+  b5–b6 and decay in the last blocks (colour 0.85 at b8) - the late stream
   is repurposed for the lead tokens' readout.
 
 ## Tests
@@ -237,14 +237,14 @@ cd python/evolinterp
 .venv/bin/python -m pytest -q -m "not server"     # skip the end-to-end real-server test
 ```
 
-- `test_toy.py` — instrumented forward == model forward (fused SDPA), attention
+- `test_toy.py` - instrumented forward == model forward (fused SDPA), attention
   sanity, interventions (attention ablation kills accuracy; block op), contract
   payload validation, cached vs fresh arrays, probe pipeline (answer appears
   only after attention), SAE train/save/load/top features.
-- `test_bsrl.py` — bit-exact verification incl. intermediate residuals, final
+- `test_bsrl.py` - bit-exact verification incl. intermediate residuals, final
   block masking, token decoding vs raw lanes, lens exact at layer L,
   interventions, payload validation.
-- `test_live.py` — the live loop against the SDK's fake server: startup
+- `test_live.py` - the live loop against the SDK's fake server: startup
   publish, control adoption/seeding, lens-only republish, ablation, bad values →
   `P.status` error, play (bool / Hz / strings), reconnect after a simulated
   server restart (data republished, lost controls re-seeded from the current
@@ -253,11 +253,11 @@ cd python/evolinterp
 - `test_toy.py` also: `P.meta` names (`short_name`, no path in `model`) and
   `meta.proj`, per-vector scale invariance of the projection, stale v1 capture
   caches recaptured. `test_bsrl.py`: BSRL names, early layers not collapsed.
-- `test_lease.py` — prefix lease: active-owner rules (stopped / stale heartbeat /
+- `test_lease.py` - prefix lease: active-owner rules (stopped / stale heartbeat /
   dead pid / remote host), refusal message, release never clobbering a successor,
   heartbeat race resolution, `live.main` refusing a taken prefix with exit code 3
   without touching `P.status`.
-- `test_integration.py` — real server (random port) supervising
+- `test_integration.py` - real server (random port) supervising
   `library/sources/interp-toy` → contract channels → controls; starting
   `interp-bsrl` meanwhile is refused (log message, self-stopped, not restarted, owner
   untouched); restarting `interp-toy` takes the prefix over → stop.
@@ -265,7 +265,7 @@ cd python/evolinterp
 ## Design notes
 
 - One adapter interface (`run`, `reference`, `tokens`, `probe_targets`,
-  `lens`) — the contract, probes, SAEs and live loop are model-agnostic.
+  `lens`) - the contract, probes, SAEs and live loop are model-agnostic.
 - Per-sample views come from an LRU of single-sample instrumented forwards
   (~10 ms for BSRL); the clean proj/norm/delta/mask come from the dataset
   cache, so control changes round-trip in ~20 ms.
