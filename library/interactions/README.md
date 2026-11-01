@@ -1,14 +1,14 @@
-# Interactions — how hand gestures do things
+# Interactions - how hand gestures do things
 
-Every hand interaction in EvolSpace — grabbing, two-hand scaling, pressing
-widget parts, push-to-talk, selection — is a **binding** from a **pose** to an
+Every hand interaction in EvolSpace - grabbing, two-hand scaling, pressing
+widget parts, push-to-talk, selection - is a **binding** from a **pose** to an
 **action**. Nothing is hard-coded: edit these files (and `library/poses/*.json`)
 and the server hot-reloads them to the headset.
 
 - Poses: `library/poses/<id>.json` (`PoseDef`): conditions over hand features.
   Feature definitions and typical values: `packages/input/FEATURES.md`.
 - Bindings live in three places:
-  1. **Entity**: `entity.interactions` (set with a scene `update` op) — only for that entity.
+  1. **Entity**: `entity.interactions` (set with a scene `update` op) - only for that entity.
   2. **Widget default**: `interactions` in a widget's definition (`library/widgets/<id>/widget.ts`).
   3. **Interaction sets** (this folder): `scope: "entity-default"` (applies to
      every entity) or `scope: "global"` (applies anywhere, even with nothing targeted).
@@ -46,8 +46,8 @@ Actions:
 |---|---|
 | `{"type":"grab"}` | Entity follows the hand rigidly (keeps the grab offset) until the pose ends. Ignored on `locked` entities. |
 | `{"type":"scale"}` | Only when the **other** hand is already grabbing the target entity: takes over as two-hand translate / yaw-rotate / uniform scale. Translation follows the midpoint between the pinches; the pivot is that midpoint when both hands touch the entity, or the entity's origin when either hand reached it by ray (distant objects scale in place). Releasing one hand returns to a one-hand grab. |
-| `{"type":"widget","handler":"drag"}` | Sends `InteractionEvent`s (`start`/`move`/`end`, `cancel` if the hand is lost) to the widget's `onInteraction`. **Only matches when the hit object was registered with `ctx.interactive()`** — so pinching a slider's knob drags it and pinching its frame falls through to grab. |
-| `{"type":"command","command":"undo","args":{…}}` | Runs a command at pose start **and again with phase `end`** at pose end (held commands like `voice.ptt` use both; one-shot commands ignore `end`). Args get `hand`, plus `entity` and `point` when the target hit something, or `entity: null` when a targeted binding (target ≠ `none`) hit nothing — e.g. `select` then clears the selection. |
+| `{"type":"widget","handler":"drag"}` | Sends `InteractionEvent`s (`start`/`move`/`end`, `cancel` if the hand is lost) to the widget's `onInteraction`. **Only matches when the hit object was registered with `ctx.interactive()`** - so pinching a slider's knob drags it and pinching its frame falls through to grab. |
+| `{"type":"command","command":"undo","args":{…}}` | Runs a command at pose start **and again with phase `end`** at pose end (held commands like `voice.ptt` use both; one-shot commands ignore `end`). Args get `hand`, plus `entity` and `point` when the target hit something, or `entity: null` when a targeted binding (target ≠ `none`) hit nothing - e.g. `select` then clears the selection. |
 | `{"type":"channel","channel":"interp.ctl.play","value":true,"endValue":false}` | Publishes `value` to a data channel at start, and `endValue` (if given) at end. |
 
 ## How a binding is chosen
@@ -56,10 +56,10 @@ When a pose starts on a hand, the engine looks for a binding in this order and
 stops at the first scope that has a match (within a scope: highest `priority`;
 ties → first declared; sets of the same scope are read in file-name order):
 
-1. **entity** — `interactions` of the entity hit by the binding's target mode
-2. **widget default** — that entity's widget's `interactions`
-3. **entity-default** sets — any entity hit by the binding's target mode
-4. **global** sets — no hit needed (commands/channels get `entity` only if something was hit)
+1. **entity** - `interactions` of the entity hit by the binding's target mode
+2. **widget default** - that entity's widget's `interactions`
+3. **entity-default** sets - any entity hit by the binding's target mode
+4. **global** sets - no hit needed (commands/channels get `entity` only if something was hit)
 
 A candidate is skipped (and the search continues) when: the pose/hand doesn't
 match; a scoped binding's target hits nothing (or hits a different entity);
@@ -69,8 +69,8 @@ already manipulating; it's `scale` and the other hand isn't grabbing the hit
 entity (or its ancestor); it's `hand: "both"` and the other hand doesn't hold
 the same pose. A `both` binding ends when either hand releases.
 
-Every pose start/end is logged as a `PoseEvent` (with the binding id and target)
-— the agent can inspect them via the events API.
+Every pose start/end is logged as a `PoseEvent` (with the binding id and target) -
+the agent can inspect them via the events API.
 
 ## Recipes
 

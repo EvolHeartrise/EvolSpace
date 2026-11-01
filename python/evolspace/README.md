@@ -1,4 +1,4 @@
-# evolspace — Python SDK
+# evolspace - Python SDK
 
 Drive EvolSpace from Python: publish/read data channels (JSON and binary
 tensors), subscribe to channels over WebSocket, apply scene ops, talk to the
@@ -32,7 +32,7 @@ evol.scene.summary(); evol.scene.find(widget="box"); evol.scene.remove(box)
 evol.scene.instantiate("resid-lens", position=[0, 1.3, -1.2])
 
 # agent I/O, system
-evol.say("Done — the lens is on your left.")       # text panel in XR (kind: reply|info|error|heard)
+evol.say("Done - the lens is on your left.")       # text panel in XR (kind: reply|info|error|heard)
 evol.set_status("working", "running probes"); evol.status()
 evol.screenshot("user", "data/shots/now.png")       # or an entity id, or a ScreenshotView dict
 evol.command("undo"); evol.sources(); evol.source("interp-bsrl", "restart")
@@ -74,13 +74,13 @@ uv sync
 .venv/bin/python -m pytest -q              # (.venv/Scripts/python on Windows)
 ```
 
-- `tests/test_codec.py` — frame layout, all dtypes, malformed frames, and a
+- `tests/test_codec.py` - frame layout, all dtypes, malformed frames, and a
   cross-language check that runs `tests/ts_codec_roundtrip.ts` with the repo's
   tsx: Python frames decode in `codec.ts` and TS frames are byte-identical to
   Python's.
-- `tests/test_client.py` — everything against `tests/fake_server.py`, an
+- `tests/test_client.py` - everything against `tests/fake_server.py`, an
   in-process fake of the server (HTTP + WS, no-echo semantics, reconnects).
-- `tests/test_real_server.py` — the real Node server, started on a random port
+- `tests/test_real_server.py` - the real Node server, started on a random port
   with a temp data dir (`tests/server_proc.py`; skipped if it cannot boot). Set
   `EVOL_TEST_URL=http://127.0.0.1:8787` to target a running server instead
   (touches only `test.sdk.*` channels and one tagged entity).

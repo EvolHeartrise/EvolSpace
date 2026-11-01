@@ -11,7 +11,7 @@ interaction engine in `@evolspace/input`.
 
 | How | URL |
 |---|---|
-| Embedded (normal) — the server serves this app through Vite middleware | `https://<pc-ip>:8443/` (headset), `http://127.0.0.1:8787/` (desktop) |
+| Embedded (normal) - the server serves this app through Vite middleware | `https://<pc-ip>:8443/` (headset), `http://127.0.0.1:8787/` (desktop) |
 | Standalone UI dev (proxies `/ws`, `/api`, `/widgets` to `EVOL_SERVER`, default `http://127.0.0.1:8787`) | `npm run dev -w @evolspace/client` → `http://localhost:5173/` |
 
 URL parameters (`src/config.ts`):
@@ -26,7 +26,7 @@ URL parameters (`src/config.ts`):
 | `server=wss://host:port` | WebSocket base override (default: same origin `/ws`). `http(s)://` and bare `host:port` are accepted; `ws=` is an alias (the mirror's documented param) |
 | `fps=72\|90\|120`, `fbscale=1.2`, `foveation=0.5` | XR quality overrides |
 | `perf=1` | show the perf overlay at start |
-| `debug=1` | desktop debug dashboard (implies `role=desktop`); `/debug` redirects here — see "Debug mode" |
+| `debug=1` | desktop debug dashboard (implies `role=desktop`); `/debug` redirects here - see "Debug mode" |
 
 Without WebXR (or with `role=desktop`) the page runs **desktop mode**:
 
@@ -51,7 +51,7 @@ same poses → bindings → actions pipeline as the headset.
 `http://127.0.0.1:8787/debug` (or `https://<pc-ip>:8443/debug`, or `?debug=1` on any URL; also the
 "Debug mode →" link on the page panel). The server redirects `/debug` to `/?role=desktop&debug=1`
 keeping other params. It is desktop mode plus a 2D dashboard (Preact + `@preact/signals`, TSX,
-lazy-loaded from `src/debug/` — the headset bundle never contains it) docked around the 3D view:
+lazy-loaded from `src/debug/` - the headset bundle never contains it) docked around the 3D view:
 toolbar on top, tabbed left / right / bottom docks (drag edges to resize, collapse, drag tabs between
 docks, right-click a tab to move/close; layout persisted in localStorage `evolspace.debug.layout`).
 
@@ -96,7 +96,7 @@ registerToolbarAction({ id, title, icon?, order?, run(ctx), active?(ctx) });  //
 `engine`, `net`, `THREE`, `scene`, `camera`, `renderer`, `api` (typed wrapper of every HTTP endpoint,
 `src/debug/api.ts`), `store` (signals: `conn`, `health`, `headset`, `scene`, `tree`, `catalog`,
 `widgetStatus`, `entityErrors`, `selection`, `selectedEntity`, `agentStatus`, `agentMessages`, `events`
-(long-polled ring buffer), `channels`/`sources` (polled only while `need('channels'|'sources')` is held —
+(long-polled ring buffer), `channels`/`sources` (polled only while `need('channels'|'sources')` is held -
 `useNeed(ctx, …)` in components), `userPose`, `workspaces`), `actions` (`select`, `frame`, `frameAll`, `ops`, `update`,
 `setProps`, `remove`, `duplicate`, `undo`, `redo`, `spawn` (≈1.2 m in front of the camera, facing it),
 `command`, `serverCommand`, `toast`, `newGroup`), `layout`, `overlays`, `toast`. Shared UI:
@@ -179,7 +179,7 @@ src/debug/             desktop debug dashboard (Preact, lazy): index.tsx entry, 
   the persisted anchor (`restorePersistentAnchor`, handle in localStorage key
   `evolspace.origin.anchor`) or, on first use, anchor at the user's feet facing
   their gaze and `requestPersistentHandle`. Anchors are used in VR too (Quest
-  supports them) — this is what makes VR/AR share coordinates and survive
+  supports them) - this is what makes VR/AR share coordinates and survive
   recenters. Without anchors: local-floor identity (+ in-memory recalibration).
   `origin.recalibrate` re-anchors; the old anchor and its persistent handle are
   deleted once the new one exists. No `bounded-floor`: room-scale pacing is unconstrained.
@@ -238,6 +238,6 @@ src/debug/             desktop debug dashboard (Preact, lazy): index.tsx entry, 
   waking the headset (`visibilitychange`, `online`) reconnects immediately
   instead of waiting out the backoff.
 - **Origin races.** Anchor restore and creation are async; a placement decided
-  later (recalibrate) always wins — a slow `restorePersistentAnchor` or
+  later (recalibrate) always wins - a slow `restorePersistentAnchor` or
   `createAnchor` that resolves afterwards is discarded (and deleted) instead of
   pulling the origin back.

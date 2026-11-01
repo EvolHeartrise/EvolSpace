@@ -1,4 +1,4 @@
-# Widgets — authoring guide
+# Widgets - authoring guide
 
 Widgets are the building blocks of the space. Each is one folder,
 `library/widgets/<id>/widget.ts`, default-exporting a `WidgetDefinition`
@@ -42,7 +42,7 @@ Prefabs: `slider-number` (slider → number), `control-panel` (panel + 2 sliders
 toggle + button, publishing to `ui.control.*`), `resid-lens` (resid-flow + layer/sample sliders).
 
 Slider pitfalls: it does not emit `value` on create (set `emitOnCreate: true` when a local
-consumer such as a read-out needs the initial value) — a `value → channel` link would otherwise
+consumer such as a read-out needs the initial value) - a `value → channel` link would otherwise
 overwrite shared channel state each time any client loads the scene. Link `commit` (user gestures
 only) to shared control channels; feed `min`/`max` from data (`#interp.meta` with transform
 `x.sample.total - 1`). A `value` input beyond the current range is clamped for display but
@@ -78,7 +78,7 @@ Host semantics (packages/runtime/src/widgets):
   `p.value !== prev.value`: the current state may have come from an input link (not persisted),
   and an unrelated edit (label, color) must not revert it.
 - Inputs received before/while re-creating are replayed after `create`. Outputs: the latest
-  value of each port is replayed to links created later — so emit initial values from `create`.
+  value of each port is replayed to links created later - so emit initial values from `create`.
 - Anything that throws (create/update/onProps/…) replaces the widget with an error box and is
   reported to Claude (`events`); other widgets keep running. After `dispose` the host also frees
   every geometry/material/texture under `ctx.root` except shared ones (`userData.evolShared`).
@@ -90,9 +90,9 @@ Host semantics (packages/runtime/src/widgets):
 | `THREE` | three.js namespace (never `import 'three'` at runtime) |
 | `root` | add your objects here; never move it (the entity transform drives it) |
 | `props`, `theme` | current props; theme colors/ramps (`accent`, `accent2`, `text`, `textDim`, `surface`, `border`, `background`, `positive`, `negative`, `palette[]`, `sequential[]`, `diverging[3]`) |
-| `ui.text(s, opts)` | troika SDF text; `.set(str)` is cheap (no-op when unchanged). Size/font are fixed at creation (re-create to change them); `color` may be reassigned live (troika applies it at render time — see `number`). Creating a text is expensive: update, don't re-create, on data changes |
+| `ui.text(s, opts)` | troika SDF text; `.set(str)` is cheap (no-op when unchanged). Size/font are fixed at creation (re-create to change them); `color` may be reassigned live (troika applies it at render time - see `number`). Creating a text is expensive: update, don't re-create, on data changes |
 | `ui.panel(w, h, opts)` | rounded themed card centered at origin, facing +Z (cached geometry + material) |
-| `ui.material(color)` | **shared** cached unlit material — never mutate; use `ownMaterial()` for anything you change |
+| `ui.material(color)` | **shared** cached unlit material - never mutate; use `ownMaterial()` for anything you change |
 | `ui.color(ramp, t)` | theme ramp color (allocates; use `shared/colormap.ts` LUTs on hot paths) |
 | `emit(port, v)` | output a value (flows over links) |
 | `input(port)` | latest input value (or its default) |
@@ -112,7 +112,7 @@ Host semantics (packages/runtime/src/widgets):
    read the definition. Build objects inside `create`, cache lazily (see `shared/resources.ts`).
 3. **Every prop has a default** that matches its type; color defaults are theme tokens
    (`accent`, `secondary`, `positive`, `negative`, `text`, `dim`, `surface`, `border`,
-   `background`) resolved with `resolveColor()` — keeps everything on-theme.
+   `background`) resolved with `resolveColor()` - keeps everything on-theme.
 4. **Quest performance** (72–90 Hz with dozens of widgets):
    - Unlit `MeshBasicMaterial` only; no lights/shadows. Solids use `shadedGeometry()` +
      `ownMaterial(…, { shaded: true })` for baked depth cues.
@@ -124,7 +124,7 @@ Host semantics (packages/runtime/src/widgets):
    - Reuse buffers/textures when sizes don't change (`needsUpdate = true`); grow capacity in
      powers of two. Rate-limit expensive text/statistics (see `channel-view`).
    - Few texts: pool them, hide what doesn't fit (≤ ~24 labels per chart).
-5. **Don't replace `onBeforeRender`** on troika text — chain it (see `shared/billboard.ts`),
+5. **Don't replace `onBeforeRender`** on troika text - chain it (see `shared/billboard.ts`),
    or the text silently disappears.
 6. **Emit on change only** (and once on create). That keeps link cycles (A ↔ B) from looping.
 7. **Rebuild cleanly.** When `onProps` rebuilds, tear down with `disposeTree(oldGroup)`
@@ -132,7 +132,7 @@ Host semantics (packages/runtime/src/widgets):
 8. **Interactive parts block grabbing.** Pinching an `interactive` part goes to the widget;
    pinching anything else grabs the entity. Leave a frame/card margin to grab by, and give
    big-area interactivity an `interactive` prop (heatmap, points, bar-chart do).
-9. Errors in data: `ctx.error(...)` and keep the last good state — never throw on bad input.
+9. Errors in data: `ctx.error(...)` and keep the last good state - never throw on bad input.
 
 ## Interaction
 
@@ -149,7 +149,7 @@ Helpers (`shared/handle.ts`): `DragHandle` (one-hand drags with start point + de
 hover tracking), `PressTracker` (merges hands; distinguishes completed vs cancelled
 presses), `KnobVisual` (idle/hover/active without allocation), `dragBinding()`.
 Make small targets easy to hit with an invisible hit mesh: `new Mesh(sharedGeometry(T,'box'),
-hitMaterial(T))` — not drawn, still raycast. Pose/binding system: `library/interactions/README.md`.
+hitMaterial(T))` - not drawn, still raycast. Pose/binding system: `library/interactions/README.md`.
 
 ## Data and links
 
@@ -157,9 +157,9 @@ hitMaterial(T))` — not drawn, still raycast. Pose/binding system: `library/int
   input (numbers as strings, size-1 tensors, f16) via `shared/tensor.ts`: `toScalar`,
   `asVector`, `asMatrix`, `asSeries`, `asPoints`, `asLabeled`, `toFloat32` (f16 decoded; f32 not copied).
 - Tensors: `{$tensor:true, dtype, shape, data}`, row-major; f16 arrives as raw `Uint16Array`.
-- Data widgets also take a `channel` prop (`ChannelProp` in `shared/binding.ts`) — a shortcut
+- Data widgets also take a `channel` prop (`ChannelProp` in `shared/binding.ts`) - a shortcut
   for a channel→port link. **`channels.subscribe` delivers a value the channel already holds
-  synchronously, inside the call** — so construct the `ChannelProp` after your first `build()`
+  synchronously, inside the call** - so construct the `ChannelProp` after your first `build()`
   (spawning a plot on a live channel crashed `line-plot` before this rule), and reset
   per-channel state *before* `refresh()` (`channel.wanted !== channel.channel`, see `channel-view`).
 
@@ -175,7 +175,7 @@ HTTP: POST /api/scene/ops {"ops":[{"op":"link.add","link":{"from":{"kind":"port"
 
 `transform` is a pure JS expression of `x`; returning `undefined` drops the value (filter).
 Port→channel values are published by the client running the widget (the headset). Prefabs
-(`library/prefabs/*.json`, type `Prefab`) bundle entities + links with local ids — see
+(`library/prefabs/*.json`, type `Prefab`) bundle entities + links with local ids - see
 `control-panel.json` for both link kinds and constant transforms (`"transform": "1"`).
 
 ## Shared library (`library/shared`)
@@ -199,7 +199,7 @@ Port→channel values are published by the client running the widget (the headse
 | `segments.ts` | `SegmentMath` (orient unit rods between points), `readVec3` |
 | `shape.ts` | implementation behind `shape`/`box` |
 | `syntax.ts` | lightweight syntax highlighting (TS/JS, Python, Rust, Go, C-family, shell, SQL, Lua, GDScript, JSON, YAML, TOML/INI, Markdown, HTML/XML, CSS, Dockerfile): `languageFor(name)`, `highlight(text, lang)` → spans per line, `colorRanges(…)` → troika colorRanges |
-| `icons.ts` | Lucide icons as flat stroke meshes: `makeIcon(ctx, 'play', {size, color})`, `setIcon`; data in `lucide-icons.ts` (generated — add icons with `node scripts/gen-lucide.mjs <name>`) |
+| `icons.ts` | Lucide icons as flat stroke meshes: `makeIcon(ctx, 'play', {size, color})`, `setIcon`; data in `lucide-icons.ts` (generated - add icons with `node scripts/gen-lucide.mjs <name>`) |
 
 Text layout note: troika measures glyphs asynchronously. Lay out with `textSize()` (estimate
 until measured), keep a `MeasureWatch` over your texts and re-run layout in `update()` when
@@ -227,13 +227,13 @@ h.dispose(); expect(h.rec.afterDispose).toEqual([]);
 
 `smoke.test.ts` runs every widget through defaults, all enum options, junk on every input and
 stray interactions; `build.test.ts` bundles each widget like the server (no bare imports) and
-evaluates it in plain Node. **A new widget is covered by both automatically** — add a focused
+evaluates it in plain Node. **A new widget is covered by both automatically** - add a focused
 test file for its behaviour. To see it for real: `screenshot` MCP tool with view
 `{kind:"widget", widget:"<id>", props:{…}}` (or `POST /api/screenshot`), or `widget_thumbnail`.
 
 ## Worked example: `gauge`
 
-`library/widgets/gauge/widget.ts` (≈ 100 lines) is the reference for a small widget — read it
+`library/widgets/gauge/widget.ts` (≈ 100 lines) is the reference for a small widget - read it
 before writing a new one. The shape of it:
 
 ```ts

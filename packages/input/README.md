@@ -4,7 +4,7 @@ Hand features, pose matching, pose recording → `PoseDef`, Quest-style hand
 rays, the interaction engine (grab / two-hand scale / widget / command /
 channel bindings) and synthetic hands for tests and the desktop simulator.
 
-Pure TypeScript — **no DOM, WebXR or three.js imports** — so the browser runtime
+Pure TypeScript - **no DOM, WebXR or three.js imports** - so the browser runtime
 and the Node server share it. Contracts are in `packages/protocol/src/gestures.ts`.
 
 ## Layout
@@ -80,11 +80,11 @@ const frame = synthHand({ hand: 'right', ...HAND_SHAPES.pinch,
   rounded outward (curl 0.05, pinch 0.005 m, cosines 0.05, degrees 1).
   Never by default: `point.forward`, `palm.forward`, `wrist.height`,
   `hands.distance`, `spread.thumb-index` (use `include`).
-- **InteractionEngine** — resolution rules in the header of `src/engine.ts`
+- **InteractionEngine** - resolution rules in the header of `src/engine.ts`
   and in `library/interactions/README.md`. Details worth knowing:
   - `setEntityTransform` receives **space-coordinate** transforms (same frame
     as `getWorldTransform`); phases: one `start`, `move` every update (host
-    throttles), one `end` — a grab that turns into a two-hand scale and back is
+    throttles), one `end` - a grab that turns into a two-hand scale and back is
     one gesture.
   - Grab pointer: touch grabs follow `{pinchPoint, wrist rotation}`; ray grabs
     follow the ray pose `{origin, lookRotation(direction)}` (object keeps its
@@ -93,7 +93,7 @@ const frame = synthHand({ hand: 'right', ...HAND_SHAPES.pinch,
     about world up (`scaleRotation: 'yaw'` default, `'full'`/`'none'`
     available); translation = motion of the pinch midpoint. The pivot for
     rotation/scale is the pinch midpoint when both hands acquired the entity by
-    **touch**, otherwise (any hand on a ray) the entity's own origin — scaling
+    **touch**, otherwise (any hand on a ray) the entity's own origin - scaling
     a panel 3 m away must not push it further away or swing it around the
     user. Releasing either hand falls back to a one-hand grab by the other.
   - Commands get `args = {...binding.args, hand, entity?, point?}` (entity/point
@@ -101,7 +101,7 @@ const frame = synthHand({ hand: 'right', ...HAND_SHAPES.pinch,
     with target ≠ `none` hit nothing, unless `binding.args` sets `entity`)
     on both `start` and `end`.
   - Widget events: `point` is the contact point for touch drags (from `start`
-    on — not the host's surface-clamped touch hit point), or the current
+    on - not the host's surface-clamped touch hit point), or the current
     ray intersected with the plane through the initial hit with normal = the
     entity's local +Z for ray drags. Lost hands → `cancel`.
   - Built-ins besides bindings: `hover` start/move/end to widgets when a hand's

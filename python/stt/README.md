@@ -69,17 +69,17 @@ patterns cover both.
 |---|---|---|---|---|---|
 | **small.en cuda int8, beam 5 (default)** | **~170 ms** | 200 ms | 390 ms | 0.03 | **0.00** |
 | small.en cuda int8, beam 1 | 169 ms | 200 ms | 414 ms | 0.03 | 0.03 |
-| small.en cuda int8_float32 | 193 ms | 313 ms | 326 ms | 0.03 | — |
-| small.en cuda float32 | 180 ms | 203 ms | 307 ms | 0.03 | — |
-| base.en cuda int8_float32 | 70 ms | 84 ms | 191 ms | 0.10 | — |
-| distil-small.en cuda int8_float32 | 125 ms | 139 ms | 187 ms | 0.10 | — |
+| small.en cuda int8_float32 | 193 ms | 313 ms | 326 ms | 0.03 | - |
+| small.en cuda float32 | 180 ms | 203 ms | 307 ms | 0.03 | - |
+| base.en cuda int8_float32 | 70 ms | 84 ms | 191 ms | 0.10 | - |
+| distil-small.en cuda int8_float32 | 125 ms | 139 ms | 187 ms | 0.10 | - |
 | medium.en cuda int8 | 386 ms | 416 ms | 737 ms | 0.00 | 0.03 |
 | large-v3-turbo cuda int8 | 505 ms | 514 ms | 592 ms | 0.03 | 0.00 |
-| distil-medium.en cuda | 280 ms | — | — | **0.60, broken on short clips** | — |
+| distil-medium.en cuda | 280 ms | - | - | **0.60, broken on short clips** | - |
 | tiny.en cpu int8 (CPU fallback) | 360 ms | 394 ms | 443 ms | 0.00 | 0.03 |
 | base.en cpu int8 | 684 ms | 758 ms | 758 ms | 0.10 | 0.13 |
-| small.en cpu int8 | 2206 ms | 3963 ms | — | 0.03 | — |
-| distil-small.en cpu int8 | 1945 ms | 5942 ms | — | 0.10 | — |
+| small.en cpu int8 | 2206 ms | 3963 ms | - | 0.03 | - |
+| distil-small.en cpu int8 | 1945 ms | 5942 ms | - | 0.10 | - |
 
 What the measurements show:
 - **CUDA works on Pascal (sm_61)** with the int8, int8_float32 and float32
